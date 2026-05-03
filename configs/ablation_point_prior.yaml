@@ -1,0 +1,54 @@
+# Ablation: BOLDFlow with a point (detached) prior.
+# Reproduces Table 2 row "+ AdaLN-Zero CFM, detached prior":
+#   T.Corr = 0.321 +/- 0.011, FC Corr = 0.442
+# Identical to configs/neurobolt.yaml except this variant uses
+# boldflow.ablations.BoldFlowPointPrior. The config flag below tells
+# scripts/train.py which model class to instantiate.
+
+name: boldflow_point_prior_neurobolt
+seed: 12345
+device: cuda
+output_dir: ./outputs/boldflow_point_prior
+
+k_folds: 5
+folds: [1, 2, 3, 4, 5]
+
+pretrained_encoder: ./checkpoints/reve-base.safetensors
+
+model:
+  variant: point_prior         # selects BoldFlowPointPrior
+  n_channels: 26
+  input_length: 6400
+  n_rois: 64
+  embed_dim: 512
+  velocity_layers: 4
+  n_inference_steps: 50
+  sigma_anneal_start: 0.5
+  sigma_anneal_end: 0.1
+  sigma_anneal_epochs: 10
+
+training:
+  epochs: 30
+  batch_size: 32
+  lr: 1.0e-4
+  weight_decay: 0.01
+  warmup_epochs: 3
+  layer_decay: 1.0
+  max_grad_norm: 2.0
+  mixed_precision: true
+  early_stopping_patience: 10
+
+data:
+  dataset: neurobolt
+  data_root: /path/to/neurobolt   # CHANGE ME (or set BOLDFLOW_DATA_ROOT)
+  n_rois: 64
+  multi_roi: true
+  tr: 2.1
+  tmin: -32.0
+  tmax: 0.0
+  apply_eeg_filter: true
+  apply_fmri_filter: true
+  normalize_eeg: true
+  exclude_non_neural: false
+  num_workers: 4
+  pin_memory: true

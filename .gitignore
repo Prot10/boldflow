@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual envs
+.venv/
+venv/
+env/
+.uv/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Mac
+.DS_Store
+
+# Repo-local artefacts
+checkpoints/*.safetensors
+checkpoints/*.pt
+outputs/
+data/
+notebooks/.ipynb_checkpoints/
+*.log
+
+# Anonymous review staging (the upload artefact for anonymous.4open.science)
+*.zip

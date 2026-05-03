@@ -1,0 +1,58 @@
+# BOLDFlow on NeuroBOLT (paper Table 1 headline configuration).
+# 5-fold inter-subject CV reproduces:
+#   MSE = 0.239,  T.Corr = 0.326 +/- 0.008,  FC Corr = 0.584 +/- 0.017
+#
+# data.data_root resolution order (any of these works):
+#   1. --data-root <path> on the command line
+#   2. BOLDFLOW_DATA_ROOT environment variable
+#   3. data.data_root in this file (the placeholder below)
+
+name: boldflow_neurobolt
+seed: 12345
+device: cuda
+output_dir: ./outputs/boldflow_neurobolt
+
+k_folds: 5
+folds: [1, 2, 3, 4, 5]
+
+# Pretrained REVE encoder. `python scripts/download_pretrained.py` puts it
+# at ./checkpoints/reve-base.safetensors. Set to null to train from scratch.
+pretrained_encoder: ./checkpoints/reve-base.safetensors
+
+model:
+  n_channels: 26
+  input_length: 6400          # 32 s at 200 Hz
+  n_rois: 64
+  embed_dim: 512
+  velocity_layers: 4
+  n_inference_steps: 50
+  prior_beta: 0.5             # Seitzer (2022) beta-NLL
+  prior_loss_weight: 1.0
+  prior_sigma_floor: 0.05
+  prior_init_sigma: 0.2
+
+training:
+  epochs: 30
+  batch_size: 32              # safe on a 40 GB A100
+  lr: 1.0e-4
+  weight_decay: 0.01
+  warmup_epochs: 3
+  layer_decay: 1.0            # paper uses no layer-wise LR decay
+  max_grad_norm: 2.0
+  mixed_precision: true
+  early_stopping_patience: 10
+
+data:
+  dataset: neurobolt
+  data_root: /path/to/neurobolt   # CHANGE ME (or set BOLDFLOW_DATA_ROOT)
+  n_rois: 64
+  multi_roi: true
+  tr: 2.1
+  tmin: -32.0
+  tmax: 0.0
+  apply_eeg_filter: true
+  apply_fmri_filter: true
+  normalize_eeg: true
+  exclude_non_neural: false
+  num_workers: 4
+  pin_memory: true
