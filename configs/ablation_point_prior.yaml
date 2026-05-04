@@ -23,6 +23,9 @@ model:
   embed_dim: 512
   velocity_layers: 4
   n_inference_steps: 50
+  num_train_steps: 10
+  flow_weight: 1.0
+  recon_weight: 1.0
   sigma_anneal_start: 0.5
   sigma_anneal_end: 0.1
   sigma_anneal_epochs: 10

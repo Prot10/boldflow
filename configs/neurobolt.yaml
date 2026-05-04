@@ -25,9 +25,12 @@ model:
   n_rois: 64
   embed_dim: 512
   velocity_layers: 4
-  n_inference_steps: 50
+  n_inference_steps: 50       # Euler steps at test time
+  num_train_steps: 10         # K_recon: differentiable Euler steps in the recon loss
+  flow_weight: 1.0            # weight on L_CFM
+  recon_weight: 1.0           # weight on L_recon (set 0 to disable, falls back to 2-term loss)
   prior_beta: 0.5             # Seitzer (2022) beta-NLL
-  prior_loss_weight: 1.0
+  prior_loss_weight: 1.0      # weight on L_prior
   prior_sigma_floor: 0.05
   prior_init_sigma: 0.2
 

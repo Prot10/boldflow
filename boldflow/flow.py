@@ -165,6 +165,34 @@ def beta_nll(
     return (weight * nll).mean()
 
 
+def _euler_integrate_core(
+    velocity_net: nn.Module,
+    x0: torch.Tensor,
+    z_eeg: torch.Tensor,
+    n_steps: int,
+) -> torch.Tensor:
+    x = x0
+    dt = 1.0 / n_steps
+    for i in range(n_steps):
+        t = torch.full((x.shape[0],), i * dt, device=x.device, dtype=x.dtype)
+        x = x + velocity_net(x, t, z_eeg) * dt
+    return x
+
+
+def euler_integrate_train(
+    velocity_net: nn.Module,
+    x0: torch.Tensor,
+    z_eeg: torch.Tensor,
+    n_steps: int = 10,
+) -> torch.Tensor:
+    """Differentiable Euler integration. Used by the reconstruction loss term.
+
+    Backprop flows through every step, so keep ``n_steps`` small (production
+    paper run uses 10 to balance gradient signal vs. memory / compute).
+    """
+    return _euler_integrate_core(velocity_net, x0, z_eeg, n_steps)
+
+
 @torch.no_grad()
 def euler_integrate(
     velocity_net: nn.Module,
@@ -173,9 +201,4 @@ def euler_integrate(
     n_steps: int = 50,
 ) -> torch.Tensor:
     """Integrate ``dx/dt = v(x, t, z_eeg)`` from t=0 to t=1 with explicit Euler."""
-    x = x0
-    dt = 1.0 / n_steps
-    for i in range(n_steps):
-        t = torch.full((x.shape[0],), i * dt, device=x.device, dtype=x.dtype)
-        x = x + velocity_net(x, t, z_eeg) * dt
-    return x
+    return _euler_integrate_core(velocity_net, x0, z_eeg, n_steps)

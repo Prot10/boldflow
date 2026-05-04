@@ -60,6 +60,28 @@ def test_training_loss_is_scalar_and_backprops(tiny_model):
     assert any(g.abs().sum() > 0 for g in grads), "no parameters received gradient"
 
 
+def test_trifold_loss_recon_term_active(tiny_model):
+    """Disabling the recon term must change the loss value AND remove the
+    velocity-net gradient path that comes from K_recon Euler unrolls."""
+    torch.manual_seed(0)
+    eeg = torch.randn(2, 26, 1600).clamp(-15, 15)
+    fmri = torch.randn(2, 8)
+    tiny_model.train()
+
+    torch.manual_seed(123)
+    full = tiny_model(eeg, fmri_target=fmri).item()
+
+    saved = tiny_model.recon_weight
+    tiny_model.recon_weight = 0.0
+    torch.manual_seed(123)
+    no_recon = tiny_model(eeg, fmri_target=fmri).item()
+    tiny_model.recon_weight = saved
+
+    assert abs(full - no_recon) > 1e-6, (
+        f"recon term inactive: trifold={full:.6f}, no_recon={no_recon:.6f}"
+    )
+
+
 def test_sample_ensemble_has_variance(tiny_model):
     eeg = torch.randn(1, 26, 1600).clamp(-15, 15)
     tiny_model.eval()

@@ -20,7 +20,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from boldflow.encoders import REVEEncoder, MSSEncoder
-from boldflow.flow import AdaLNVelocityNet, euler_integrate
+from boldflow.flow import AdaLNVelocityNet, euler_integrate, euler_integrate_train
 from boldflow.model import BoldFlow
 
 
@@ -51,6 +51,9 @@ class BoldFlowPointPrior(nn.Module):
       * Auxiliary loss is plain MSE on ``mu`` (no beta-NLL).
       * Inference draws ``x_0 = mu`` (no ensembling).
 
+    Loss structure matches the production code:
+    ``L = w_flow*MSE(v, x1 - x0) + w_recon*MSE(Phi^{K_recon}(x0'), x1) + MSE(mu, x1)``.
+
     This reproduces the Table 2 ablation row "+ AdaLN-Zero CFM, detached
     prior" with paper headline T.Corr=0.321 +/- 0.011, FC Corr=0.442.
     """
@@ -63,12 +66,18 @@ class BoldFlowPointPrior(nn.Module):
         embed_dim: int = 512,
         velocity_layers: int = 4,
         n_inference_steps: int = 50,
+        num_train_steps: int = 10,
+        flow_weight: float = 1.0,
+        recon_weight: float = 1.0,
         sigma_anneal_start: float = 0.5,
         sigma_anneal_end: float = 0.1,
         sigma_anneal_epochs: int = 10,
     ):
         super().__init__()
         self.n_inference_steps = n_inference_steps
+        self.num_train_steps = num_train_steps
+        self.flow_weight = flow_weight
+        self.recon_weight = recon_weight
         self.sigma_anneal_start = sigma_anneal_start
         self.sigma_anneal_end = sigma_anneal_end
         self.sigma_anneal_epochs = sigma_anneal_epochs
@@ -135,14 +144,33 @@ class BoldFlowPointPrior(nn.Module):
         mu = self.detached_prior_net(z_eeg)
 
         if self.training and fmri_target is not None:
-            aux = F.mse_loss(mu, fmri_target)
-            x0 = mu.detach() + self.current_sigma * torch.randn_like(mu)
             x1 = fmri_target
+
+            # CFM matching loss (mu is detached so the flow gradient does not
+            # update the prior net; aux MSE on mu provides that signal).
+            x0 = mu.detach() + self.current_sigma * torch.randn_like(mu)
             t = torch.rand(x0.shape[0], device=eeg.device).clamp(1e-5, 1 - 1e-5)
             xt = (1 - t.unsqueeze(1)) * x0 + t.unsqueeze(1) * x1
             ut = x1 - x0
             vt = self.velocity_net(xt, t, z_eeg)
-            return F.mse_loss(vt, ut) + aux
+            flow_loss = F.mse_loss(vt, ut)
+
+            # Reconstruction loss with a fresh, independent source draw.
+            x0_recon = mu.detach() + self.current_sigma * torch.randn_like(mu)
+            y_pred = euler_integrate_train(
+                self.velocity_net, x0_recon, z_eeg, self.num_train_steps,
+            )
+            recon_loss = F.mse_loss(y_pred, x1)
+
+            # Auxiliary MSE on the prior mean (replaces the beta-NLL term;
+            # the prior net only learns through this channel).
+            aux_loss = F.mse_loss(mu, x1)
+
+            return (
+                self.flow_weight * flow_loss
+                + self.recon_weight * recon_loss
+                + aux_loss
+            )
 
         with torch.no_grad():
             return euler_integrate(self.velocity_net, mu, z_eeg, self.n_inference_steps)

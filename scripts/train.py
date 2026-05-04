@@ -81,6 +81,9 @@ def _make_model_factory(cfg: Dict[str, Any], variant: str):
             embed_dim=int(m["embed_dim"]),
             velocity_layers=int(m["velocity_layers"]),
             n_inference_steps=int(m["n_inference_steps"]),
+            num_train_steps=int(m.get("num_train_steps", 10)),
+            flow_weight=float(m.get("flow_weight", 1.0)),
+            recon_weight=float(m.get("recon_weight", 1.0)),
             sigma_anneal_start=float(m.get("sigma_anneal_start", 0.5)),
             sigma_anneal_end=float(m.get("sigma_anneal_end", 0.1)),
             sigma_anneal_epochs=int(m.get("sigma_anneal_epochs", 10)),
@@ -128,17 +131,21 @@ def _run_one_seed(cfg: Dict[str, Any], seed: int, output_dir: Path,
 
     factory = _make_model_factory(cfg, variant)
     if factory is None:
+        m = cfg["model"]
         model_kwargs = dict(
-            n_channels=int(cfg["model"]["n_channels"]),
-            input_length=int(cfg["model"]["input_length"]),
-            n_rois=int(cfg["model"]["n_rois"]),
-            embed_dim=int(cfg["model"]["embed_dim"]),
-            velocity_layers=int(cfg["model"]["velocity_layers"]),
-            n_inference_steps=int(cfg["model"]["n_inference_steps"]),
-            prior_beta=float(cfg["model"]["prior_beta"]),
-            prior_loss_weight=float(cfg["model"]["prior_loss_weight"]),
-            prior_sigma_floor=float(cfg["model"]["prior_sigma_floor"]),
-            prior_init_sigma=float(cfg["model"]["prior_init_sigma"]),
+            n_channels=int(m["n_channels"]),
+            input_length=int(m["input_length"]),
+            n_rois=int(m["n_rois"]),
+            embed_dim=int(m["embed_dim"]),
+            velocity_layers=int(m["velocity_layers"]),
+            n_inference_steps=int(m["n_inference_steps"]),
+            num_train_steps=int(m.get("num_train_steps", 10)),
+            flow_weight=float(m.get("flow_weight", 1.0)),
+            recon_weight=float(m.get("recon_weight", 1.0)),
+            prior_beta=float(m["prior_beta"]),
+            prior_loss_weight=float(m["prior_loss_weight"]),
+            prior_sigma_floor=float(m["prior_sigma_floor"]),
+            prior_init_sigma=float(m["prior_init_sigma"]),
         )
     else:
         model_kwargs = None

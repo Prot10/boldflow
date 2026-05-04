@@ -24,9 +24,15 @@ Architecture (~96.4 M parameters at the default ``embed_dim=512``)::
        v
     Euler ODE integration (n_inference_steps) -> predicted fMRI (B, n_rois)
 
-Training: I-CFM (linear path, no OT) with
-``L = MSE(v_theta, x_1 - x_0) + lambda * beta_NLL(mu, sigma, x_1)``,
-``lambda = 1``, ``beta = 0.5``.
+Training loss (matches the production code that trained the paper headline)::
+
+    L = w_flow  * MSE(v_theta(x_t, t, z_eeg),  x_1 - x_0)        # CFM term
+      + w_recon * MSE(Phi_theta^{K_recon}(x_0', z_eeg),  x_1)    # reconstruction
+      + lambda  * beta_NLL(mu, sigma, x_1; beta=0.5)             # prior term
+
+with ``x_0  = mu + sigma * eps``, ``x_0' = mu + sigma * eps'`` (independent
+draws), ``K_recon = num_train_steps = 10`` differentiable Euler steps,
+``w_flow = w_recon = lambda = 1``, ``beta = 0.5``. I-CFM (no OT).
 """
 from __future__ import annotations
 
@@ -44,6 +50,7 @@ from boldflow.flow import (
     DistributionalPrior,
     beta_nll,
     euler_integrate,
+    euler_integrate_train,
 )
 
 
@@ -64,8 +71,17 @@ class BoldFlow(nn.Module):
     velocity_layers
         AdaLN-Zero blocks in the velocity net.
     n_inference_steps
-        Explicit Euler steps used at inference.
-    prior_beta, prior_loss_weight, prior_sigma_floor, prior_init_sigma
+        Explicit Euler steps used at inference (default 50).
+    num_train_steps
+        Differentiable Euler steps used inside the reconstruction loss (default
+        10, matching the production paper run). Trades gradient signal for
+        memory and compute.
+    flow_weight, recon_weight, prior_loss_weight
+        Loss weights. Defaults are 1.0 / 1.0 / 1.0, matching the production run.
+        Setting ``recon_weight=0`` disables the reconstruction term and gives
+        the simpler two-term loss; setting ``prior_loss_weight=0`` removes the
+        prior supervision (mu, sigma stay at their initialisation).
+    prior_beta, prior_sigma_floor, prior_init_sigma
         Hyperparameters of the distributional prior and beta-NLL loss.
     """
 
@@ -90,6 +106,9 @@ class BoldFlow(nn.Module):
         velocity_layers=4,
         velocity_time_dim=64,
         n_inference_steps=50,
+        num_train_steps=10,
+        flow_weight=1.0,
+        recon_weight=1.0,
         prior_hidden_1=256,
         prior_hidden_2=128,
         prior_dropout=0.1,
@@ -107,6 +126,9 @@ class BoldFlow(nn.Module):
         embed_dim: int = 512,
         velocity_layers: int = 4,
         n_inference_steps: int = 50,
+        num_train_steps: int = 10,
+        flow_weight: float = 1.0,
+        recon_weight: float = 1.0,
         prior_beta: float = 0.5,
         prior_loss_weight: float = 1.0,
         prior_sigma_floor: float = 0.05,
@@ -119,6 +141,9 @@ class BoldFlow(nn.Module):
         self.n_rois = n_rois
         self.embed_dim = embed_dim
         self.n_inference_steps = n_inference_steps
+        self.num_train_steps = num_train_steps
+        self.flow_weight = flow_weight
+        self.recon_weight = recon_weight
         self.prior_beta = prior_beta
         self.prior_loss_weight = prior_loss_weight
 
@@ -191,24 +216,42 @@ class BoldFlow(nn.Module):
     ) -> torch.Tensor:
         """Train (with ``fmri_target``) or run inference.
 
-        Training path returns scalar
-        ``L = flow_MSE + prior_loss_weight * beta_NLL``.
-        Inference path returns the deterministic point estimate ``Euler(mu)``.
+        Training returns the trifold loss
+        ``L = w_flow*L_CFM + w_recon*L_recon + lambda*L_prior``;
+        inference returns the deterministic point estimate ``Euler(mu)``.
         """
         z_eeg = self.encode_eeg(eeg)
         mu, sigma = self.distributional_prior_head(z_eeg)
 
         if self.training and fmri_target is not None:
+            x1 = fmri_target
+
+            # CFM matching loss (independent source draw eps).
             eps = torch.randn_like(mu)
             x0 = mu + sigma * eps
-            x1 = fmri_target
             t = torch.rand(x0.shape[0], device=eeg.device).clamp(1e-5, 1 - 1e-5)
             xt = (1 - t.unsqueeze(1)) * x0 + t.unsqueeze(1) * x1
             ut = x1 - x0
             vt = self.velocity_net(xt, t, z_eeg)
             flow_loss = F.mse_loss(vt, ut)
+
+            # Reconstruction loss: differentiable Euler unroll from a fresh
+            # source draw eps' (independent of eps, matches the production run).
+            eps_recon = torch.randn_like(mu)
+            x0_recon = mu + sigma * eps_recon
+            y_pred = euler_integrate_train(
+                self.velocity_net, x0_recon, z_eeg, self.num_train_steps,
+            )
+            recon_loss = F.mse_loss(y_pred, x1)
+
+            # beta-NLL on the per-sample Gaussian prior (Seitzer 2022).
             prior_loss = beta_nll(mu, sigma, x1, beta=self.prior_beta)
-            return flow_loss + self.prior_loss_weight * prior_loss
+
+            return (
+                self.flow_weight * flow_loss
+                + self.recon_weight * recon_loss
+                + self.prior_loss_weight * prior_loss
+            )
 
         with torch.no_grad():
             return euler_integrate(self.velocity_net, mu, z_eeg, self.n_inference_steps)
