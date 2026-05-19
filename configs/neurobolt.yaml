@@ -22,15 +22,13 @@ pretrained_encoder: ./checkpoints/reve-base.safetensors
 model:
   n_channels: 26
   input_length: 6400          # 32 s at 200 Hz
-  n_rois: 64
+  n_rois: 64                  # DiFuMo parcels per TR
+  n_out_timesteps: 4          # seq2seq horizon T_out (paper headline)
   embed_dim: 512
   velocity_layers: 4
   n_inference_steps: 50       # Euler steps at test time
-  num_train_steps: 10         # K_recon: differentiable Euler steps in the recon loss
-  flow_weight: 1.0            # weight on L_CFM
-  recon_weight: 1.0           # weight on L_recon (set 0 to disable, falls back to 2-term loss)
   prior_beta: 0.5             # Seitzer (2022) beta-NLL
-  prior_loss_weight: 1.0      # weight on L_prior
+  prior_loss_weight: 1.0      # lambda: weight on L_prior (paper Eq. 5)
   prior_sigma_floor: 0.05
   prior_init_sigma: 0.2
 

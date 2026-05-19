@@ -15,24 +15,26 @@ Architecture (~96.4 M parameters at the default ``embed_dim=512``)::
        +--------+------------+
        |                     |
        v                     v
-    DistributionalPrior   AdaLNVelocityNet (B, 64) <- (B, 64), t, z_eeg
+    DistributionalPrior   AdaLNVelocityNet (B, D) <- (B, D), t, z_eeg
        (mu, sigma)
        |
        v
     x_0 = mu (+ sigma * eps  during training, or for ensemble UQ)
        |
        v
-    Euler ODE integration (n_inference_steps) -> predicted fMRI (B, n_rois)
+    Euler ODE integration (n_inference_steps) -> predicted fMRI (B, D)
 
-Training loss (matches the production code that trained the paper headline)::
+The flow dimension is ``D = n_rois * n_out_timesteps``. With the default
+seq2seq horizon ``n_out_timesteps=4`` the model predicts the block of 4
+consecutive DiFuMo volumes ending at the anchor TR (D = 4*64 = 256); set
+``n_out_timesteps=1`` for the seq2one variant (D = n_rois).
 
-    L = w_flow  * MSE(v_theta(x_t, t, z_eeg),  x_1 - x_0)        # CFM term
-      + w_recon * MSE(Phi_theta^{K_recon}(x_0', z_eeg),  x_1)    # reconstruction
-      + lambda  * beta_NLL(mu, sigma, x_1; beta=0.5)             # prior term
+Training loss (I-CFM, matches the paper, Eq. 4-5)::
 
-with ``x_0  = mu + sigma * eps``, ``x_0' = mu + sigma * eps'`` (independent
-draws), ``K_recon = num_train_steps = 10`` differentiable Euler steps,
-``w_flow = w_recon = lambda = 1``, ``beta = 0.5``. I-CFM (no OT).
+    L = MSE(v_theta(x_t, t, z_eeg),  x_1 - x_0)        # CFM term  (Eq. 4)
+      + lambda * beta_NLL(mu, sigma, x_1; beta=0.5)    # prior term (Eq. 5)
+
+with ``x_0 = mu + sigma * eps``, ``lambda = 1``, ``beta = 0.5``. I-CFM (no OT).
 """
 from __future__ import annotations
 
@@ -50,7 +52,6 @@ from boldflow.flow import (
     DistributionalPrior,
     beta_nll,
     euler_integrate,
-    euler_integrate_train,
 )
 
 
@@ -65,22 +66,22 @@ class BoldFlow(nn.Module):
         EEG samples per window (= sampling_rate * window_seconds). Default
         6400 = 32 s at 200 Hz, the paper headline.
     n_rois
-        fMRI parcels to predict (DiFuMo-64 by default; 256 / 512 supported).
+        fMRI parcels per TR (DiFuMo-64 by default; 256 / 512 supported).
+    n_out_timesteps
+        Seq2seq horizon ``T_out``: number of consecutive DiFuMo volumes
+        predicted per EEG window (default 4, the paper headline). The flow
+        dimension is ``D = n_rois * n_out_timesteps``; ``n_out_timesteps=1``
+        recovers the seq2one variant.
     embed_dim
         Width of the EEG embedding space.
     velocity_layers
         AdaLN-Zero blocks in the velocity net.
     n_inference_steps
         Explicit Euler steps used at inference (default 50).
-    num_train_steps
-        Differentiable Euler steps used inside the reconstruction loss (default
-        10, matching the production paper run). Trades gradient signal for
-        memory and compute.
-    flow_weight, recon_weight, prior_loss_weight
-        Loss weights. Defaults are 1.0 / 1.0 / 1.0, matching the production run.
-        Setting ``recon_weight=0`` disables the reconstruction term and gives
-        the simpler two-term loss; setting ``prior_loss_weight=0`` removes the
-        prior supervision (mu, sigma stay at their initialisation).
+    prior_loss_weight
+        Weight ``lambda`` on the beta-NLL prior term (default 1.0, paper Eq. 5).
+        Setting it to 0 removes the prior supervision (mu, sigma stay at their
+        initialisation).
     prior_beta, prior_sigma_floor, prior_init_sigma
         Hyperparameters of the distributional prior and beta-NLL loss.
     """
@@ -106,9 +107,6 @@ class BoldFlow(nn.Module):
         velocity_layers=4,
         velocity_time_dim=64,
         n_inference_steps=50,
-        num_train_steps=10,
-        flow_weight=1.0,
-        recon_weight=1.0,
         prior_hidden_1=256,
         prior_hidden_2=128,
         prior_dropout=0.1,
@@ -123,12 +121,10 @@ class BoldFlow(nn.Module):
         n_channels: int = 26,
         input_length: int = 6400,
         n_rois: int = 64,
+        n_out_timesteps: int = 4,
         embed_dim: int = 512,
         velocity_layers: int = 4,
         n_inference_steps: int = 50,
-        num_train_steps: int = 10,
-        flow_weight: float = 1.0,
-        recon_weight: float = 1.0,
         prior_beta: float = 0.5,
         prior_loss_weight: float = 1.0,
         prior_sigma_floor: float = 0.05,
@@ -139,11 +135,11 @@ class BoldFlow(nn.Module):
         self.n_channels = n_channels
         self.input_length = input_length
         self.n_rois = n_rois
+        self.n_out_timesteps = max(1, int(n_out_timesteps))
+        # Flow dimension: T_out consecutive DiFuMo volumes, flattened.
+        self.flow_dim = n_rois * self.n_out_timesteps
         self.embed_dim = embed_dim
         self.n_inference_steps = n_inference_steps
-        self.num_train_steps = num_train_steps
-        self.flow_weight = flow_weight
-        self.recon_weight = recon_weight
         self.prior_beta = prior_beta
         self.prior_loss_weight = prior_loss_weight
 
@@ -186,7 +182,7 @@ class BoldFlow(nn.Module):
         self.head_activation = nn.GELU()
 
         self.velocity_net = AdaLNVelocityNet(
-            flow_dim=n_rois,
+            flow_dim=self.flow_dim,
             cond_dim=embed_dim,
             hidden=int(d["velocity_hidden"]),
             n_layers=velocity_layers,
@@ -195,7 +191,7 @@ class BoldFlow(nn.Module):
         # Attribute name kept stable for compatibility with released checkpoints.
         self.distributional_prior_head = DistributionalPrior(
             cond_dim=embed_dim,
-            flow_dim=n_rois,
+            flow_dim=self.flow_dim,
             hidden_1=int(d["prior_hidden_1"]),
             hidden_2=int(d["prior_hidden_2"]),
             dropout=float(d["prior_dropout"]),
@@ -216,9 +212,9 @@ class BoldFlow(nn.Module):
     ) -> torch.Tensor:
         """Train (with ``fmri_target``) or run inference.
 
-        Training returns the trifold loss
-        ``L = w_flow*L_CFM + w_recon*L_recon + lambda*L_prior``;
-        inference returns the deterministic point estimate ``Euler(mu)``.
+        Training returns the two-term loss ``L = L_CFM + lambda*L_prior``
+        (paper Eq. 4-5); inference returns the deterministic point estimate
+        ``Euler(mu)``.
         """
         z_eeg = self.encode_eeg(eeg)
         mu, sigma = self.distributional_prior_head(z_eeg)
@@ -226,7 +222,7 @@ class BoldFlow(nn.Module):
         if self.training and fmri_target is not None:
             x1 = fmri_target
 
-            # CFM matching loss (independent source draw eps).
+            # CFM matching loss (Eq. 4). I-CFM: index-wise pairing, no OT.
             eps = torch.randn_like(mu)
             x0 = mu + sigma * eps
             t = torch.rand(x0.shape[0], device=eeg.device).clamp(1e-5, 1 - 1e-5)
@@ -235,23 +231,10 @@ class BoldFlow(nn.Module):
             vt = self.velocity_net(xt, t, z_eeg)
             flow_loss = F.mse_loss(vt, ut)
 
-            # Reconstruction loss: differentiable Euler unroll from a fresh
-            # source draw eps' (independent of eps, matches the production run).
-            eps_recon = torch.randn_like(mu)
-            x0_recon = mu + sigma * eps_recon
-            y_pred = euler_integrate_train(
-                self.velocity_net, x0_recon, z_eeg, self.num_train_steps,
-            )
-            recon_loss = F.mse_loss(y_pred, x1)
-
-            # beta-NLL on the per-sample Gaussian prior (Seitzer 2022).
+            # beta-NLL on the per-sample Gaussian prior (Eq. 5, Seitzer 2022).
             prior_loss = beta_nll(mu, sigma, x1, beta=self.prior_beta)
 
-            return (
-                self.flow_weight * flow_loss
-                + self.recon_weight * recon_loss
-                + self.prior_loss_weight * prior_loss
-            )
+            return flow_loss + self.prior_loss_weight * prior_loss
 
         with torch.no_grad():
             return euler_integrate(self.velocity_net, mu, z_eeg, self.n_inference_steps)

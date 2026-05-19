@@ -24,9 +24,19 @@ def tiny_model() -> BoldFlow:
         n_channels=26,
         input_length=1600,
         n_rois=8,
+        n_out_timesteps=1,        # seq2one: keeps the shape assertions simple
         embed_dim=64,
         velocity_layers=2,
         n_inference_steps=5,
+    )
+
+
+@pytest.fixture
+def tiny_seq2seq_model() -> BoldFlow:
+    """Tiny seq2seq variant (T_out=3): flow_dim = n_rois * T_out = 24."""
+    return BoldFlow(
+        n_channels=26, input_length=1600, n_rois=8, n_out_timesteps=3,
+        embed_dim=64, velocity_layers=2, n_inference_steps=5,
     )
 
 
@@ -60,9 +70,10 @@ def test_training_loss_is_scalar_and_backprops(tiny_model):
     assert any(g.abs().sum() > 0 for g in grads), "no parameters received gradient"
 
 
-def test_trifold_loss_recon_term_active(tiny_model):
-    """Disabling the recon term must change the loss value AND remove the
-    velocity-net gradient path that comes from K_recon Euler unrolls."""
+def test_two_term_loss_prior_term_active(tiny_model):
+    """The training loss is L = L_CFM + lambda*L_prior (paper Eq. 4-5).
+    Zeroing lambda (prior_loss_weight) must change the loss value, confirming
+    the beta-NLL prior term is actually contributing."""
     torch.manual_seed(0)
     eeg = torch.randn(2, 26, 1600).clamp(-15, 15)
     fmri = torch.randn(2, 8)
@@ -71,15 +82,59 @@ def test_trifold_loss_recon_term_active(tiny_model):
     torch.manual_seed(123)
     full = tiny_model(eeg, fmri_target=fmri).item()
 
-    saved = tiny_model.recon_weight
-    tiny_model.recon_weight = 0.0
+    saved = tiny_model.prior_loss_weight
+    tiny_model.prior_loss_weight = 0.0
     torch.manual_seed(123)
-    no_recon = tiny_model(eeg, fmri_target=fmri).item()
-    tiny_model.recon_weight = saved
+    no_prior = tiny_model(eeg, fmri_target=fmri).item()
+    tiny_model.prior_loss_weight = saved
 
-    assert abs(full - no_recon) > 1e-6, (
-        f"recon term inactive: trifold={full:.6f}, no_recon={no_recon:.6f}"
+    assert abs(full - no_prior) > 1e-6, (
+        f"prior term inactive: full={full:.6f}, no_prior={no_prior:.6f}"
     )
+
+
+def test_seq2seq_flow_dim_and_inference_shape(tiny_seq2seq_model):
+    """A seq2seq model flows in T_out*R space and returns (B, T_out*R)."""
+    m = tiny_seq2seq_model
+    assert m.flow_dim == 8 * 3
+    assert m.n_out_timesteps == 3
+    eeg = torch.randn(2, 26, 1600).clamp(-15, 15)
+    m.eval()
+    with torch.no_grad():
+        pred = m(eeg)
+    assert pred.shape == (2, 24)              # (B, T_out * R)
+    assert torch.isfinite(pred).all()
+
+
+def test_seq2seq_training_loss_backprops(tiny_seq2seq_model):
+    """Seq2seq training takes a flattened (B, T_out*R) target block."""
+    m = tiny_seq2seq_model
+    eeg = torch.randn(2, 26, 1600).clamp(-15, 15)
+    fmri = torch.randn(2, 24)                 # (B, T_out * R)
+    m.train()
+    loss = m(eeg, fmri_target=fmri)
+    assert loss.dim() == 0 and torch.isfinite(loss)
+    loss.backward()
+    assert any(p.grad is not None and p.grad.abs().sum() > 0
+               for p in m.parameters())
+
+
+def test_overlap_average_recovers_interior_trajectory():
+    """_overlap_average must reconstruct the per-TR trajectory exactly when
+    every block is a clean slice of one ground-truth trajectory."""
+    import numpy as np
+
+    from boldflow.training import _overlap_average
+
+    t_out, r, n_tr = 3, 5, 10
+    traj = np.random.RandomState(0).randn(n_tr, r).astype(np.float32)
+    n_win = n_tr - t_out + 1
+    blocks = np.stack([traj[i:i + t_out] for i in range(n_win)])  # (n_win, T, R)
+    agg_p, agg_t = _overlap_average(blocks, blocks, t_out)
+    interior = traj[t_out - 1:n_win]          # TRs covered by all T_out windows
+    assert agg_p.shape == interior.shape
+    assert np.allclose(agg_p, interior, atol=1e-5)
+    assert np.allclose(agg_t, interior, atol=1e-5)
 
 
 def test_sample_ensemble_has_variance(tiny_model):
@@ -103,7 +158,7 @@ def test_prior_sigma_stats_returns_floats(tiny_model):
 def test_sleep_montage_30_channels():
     """BoldFlow with n_channels=30 must use SLEEP_CHANNEL_ORDER and accept 30-channel EEG."""
     model = BoldFlow(
-        n_channels=30, input_length=1600, n_rois=8,
+        n_channels=30, input_length=1600, n_rois=8, n_out_timesteps=1,
         embed_dim=64, velocity_layers=2, n_inference_steps=4,
     )
     eeg = torch.randn(2, 30, 1600).clamp(-15, 15)

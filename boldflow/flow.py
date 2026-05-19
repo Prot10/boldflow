@@ -179,20 +179,6 @@ def _euler_integrate_core(
     return x
 
 
-def euler_integrate_train(
-    velocity_net: nn.Module,
-    x0: torch.Tensor,
-    z_eeg: torch.Tensor,
-    n_steps: int = 10,
-) -> torch.Tensor:
-    """Differentiable Euler integration. Used by the reconstruction loss term.
-
-    Backprop flows through every step, so keep ``n_steps`` small (production
-    paper run uses 10 to balance gradient signal vs. memory / compute).
-    """
-    return _euler_integrate_core(velocity_net, x0, z_eeg, n_steps)
-
-
 @torch.no_grad()
 def euler_integrate(
     velocity_net: nn.Module,

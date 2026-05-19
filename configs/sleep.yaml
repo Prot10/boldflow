@@ -18,13 +18,11 @@ pretrained_encoder: ./checkpoints/reve-base.safetensors
 model:
   n_channels: 30          # OpenNeuroSleep has 30 EEG channels
   input_length: 6400
-  n_rois: 64
+  n_rois: 64              # DiFuMo parcels per TR
+  n_out_timesteps: 4      # seq2seq horizon T_out (paper headline)
   embed_dim: 512
   velocity_layers: 4
   n_inference_steps: 50
-  num_train_steps: 10     # K_recon: differentiable Euler steps in the recon loss
-  flow_weight: 1.0
-  recon_weight: 1.0
   prior_beta: 0.5
   prior_loss_weight: 1.0
   prior_sigma_floor: 0.05
