@@ -25,13 +25,13 @@ EEG (B, 26, 6400)              # 32 s at 200 Hz, z-scored, clipped to [-15, 15]
         v
      additive fusion + GELU  ->  z_eeg  (B, 512)
         |
-        +-- DistributionalPrior(z_eeg) -> (mu, sigma)        # ~0.43 M, learned Gaussian
-        +-- AdaLN-Zero velocity net  v(x_t, t, z_eeg)        # ~13.2 M, 4 blocks
+        +-- DistributionalPrior(z_eeg) -> (mu, sigma)        # ~0.18 M, learned Gaussian
+        +-- AdaLN-Zero velocity net  v(x_t, t, z_eeg)        # ~13.0 M, 4 blocks
         |
         v
      50 explicit Euler steps  ->  predicted fMRI (B, 256) = 4 x DiFuMo-64
 
-Total: ~96.6 M parameters at the default embed_dim=512, n_out_timesteps=4.
+Total: ~96.4 M parameters at the default embed_dim=512, n_out_timesteps=4.
 ```
 
 **Sequence-to-sequence output.** Each EEG window predicts the block of
@@ -88,7 +88,7 @@ CLI flags `--data-root`, `--output-dir`, `--checkpoints-dir` take precedence.
 import torch
 from boldflow import BoldFlow
 
-model = BoldFlow()                                 # ~96.6 M parameters, T_out=4
+model = BoldFlow()                                 # ~96.4 M parameters, T_out=4
 eeg = torch.randn(1, 26, 6400).clamp(-15, 15)      # 32 s @ 200 Hz, z-scored
 prediction = model(eeg)                            # (1, 256) = 4 x DiFuMo-64
 blocks = prediction.reshape(1, 4, 64)              # (1, T_out, R) per-TR volumes

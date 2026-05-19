@@ -59,7 +59,7 @@ paper. No learnable parameters.
 * `mu_head` and `sigma_head` are linear probes on top of a shared two-layer
   MLP trunk (256 -> 128).
 * `sigma_head.bias` is initialised so `sigma(t = 0) ~ init_sigma = 0.2`.
-* Approx. 0.43 M parameters at the default `T_out = 4` (0.18 M at `T_out = 1`).
+* Approx. 0.18 M parameters.
 
 ## Velocity network (`boldflow.flow.AdaLNVelocityNet`)
 
@@ -71,7 +71,7 @@ paper. No learnable parameters.
 * Input/output projections map the flow vector `D = n_rois * n_out_timesteps`
   to/from the hidden width. The output projection is zero-init so the velocity
   is zero at init, matching DiT's "AdaLN-Zero" recipe.
-* Approx. 13.2 M parameters at `hidden=512`, 4 blocks, `T_out = 4` (mostly the
+* Approx. 13.0 M parameters at `hidden=512` and 4 blocks (mostly the
   FFN inside each block, `Linear(512, 2048) -> Linear(2048, 512)`).
 
 ## Training objective
@@ -108,19 +108,16 @@ trajectory before computing T.Corr / FC Corr.
 
 ## Total parameter count
 
-At the default `embed_dim=512`, `n_out_timesteps=4`, the model has 96,649,600
-trainable parameters, distributed as:
+At the default `embed_dim=512`, the model has ~96.4 M trainable parameters,
+distributed as:
 
 ```
 Component                       Parameters
 REVE encoder + attention pool    70.2 M
 MSS spectral encoder             13.0 M
-AdaLN velocity network           13.2 M
-Distributional prior head         0.43 M
+AdaLN velocity network           13.0 M
+Distributional prior head         0.18 M
                                  ------
-Total                            96.6 M
+Total                            96.4 M
 ```
-
-(At `n_out_timesteps=1` the velocity and prior heads shrink and the total is
-96.4 M.)
 
