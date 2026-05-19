@@ -133,6 +133,7 @@ operating-point ablation are reproduced by changing config knobs:
 | ------------------------- | ----------------------------------- |
 | Context length            | `data.tmin` (and `model.input_length`) |
 | Parcellation              | `data.n_rois` and `model.n_rois`    |
+| Seq2seq horizon T_out      | `model.n_out_timesteps` (1 = seq2one, 4 = headline) |
 | Without spectral encoder  | (not exposed; see `boldflow/model.py`) |
 
 ## 7. Per-fold reproducibility

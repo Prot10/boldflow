@@ -25,14 +25,22 @@ EEG (B, 26, 6400)              # 32 s at 200 Hz, z-scored, clipped to [-15, 15]
         v
      additive fusion + GELU  ->  z_eeg  (B, 512)
         |
-        +-- DistributionalPrior(z_eeg) -> (mu, sigma)        # ~0.18 M, learned Gaussian
-        +-- AdaLN-Zero velocity net  v(x_t, t, z_eeg)        # ~13.0 M, 4 blocks
+        +-- DistributionalPrior(z_eeg) -> (mu, sigma)        # ~0.43 M, learned Gaussian
+        +-- AdaLN-Zero velocity net  v(x_t, t, z_eeg)        # ~13.2 M, 4 blocks
         |
         v
-     50 explicit Euler steps  ->  predicted fMRI (B, 64) over DiFuMo-64
+     50 explicit Euler steps  ->  predicted fMRI (B, 256) = 4 x DiFuMo-64
 
-Total: ~96.4 M parameters at the default embed_dim=512.
+Total: ~96.6 M parameters at the default embed_dim=512, n_out_timesteps=4.
 ```
+
+**Sequence-to-sequence output.** Each EEG window predicts the block of
+`n_out_timesteps` consecutive DiFuMo volumes ending at the anchor TR (the
+paper headline uses `T_out = 4`), so the flow dimension is
+`D = n_rois * n_out_timesteps = 256`. Because neighbouring windows overlap,
+every interior TR is predicted `T_out` times; evaluation overlap-averages
+those estimates into the final per-TR trajectory. Set `n_out_timesteps=1`
+for the seq2one variant (`D = n_rois`).
 
 Training loss: `MSE(v, x_1 - x_0) + lambda * beta_NLL(mu, sigma, x_1)` with
 `lambda = 1`, `beta = 0.5`, I-CFM (no OT rematching).
@@ -80,12 +88,13 @@ CLI flags `--data-root`, `--output-dir`, `--checkpoints-dir` take precedence.
 import torch
 from boldflow import BoldFlow
 
-model = BoldFlow()                                 # ~96 M parameters
+model = BoldFlow()                                 # ~96.6 M parameters, T_out=4
 eeg = torch.randn(1, 26, 6400).clamp(-15, 15)      # 32 s @ 200 Hz, z-scored
-prediction = model(eeg)                            # (1, 64) DiFuMo-64
+prediction = model(eeg)                            # (1, 256) = 4 x DiFuMo-64
+blocks = prediction.reshape(1, 4, 64)              # (1, T_out, R) per-TR volumes
 
 # Native ensemble UQ:
-samples = model.sample_ensemble(eeg, n_samples=50) # (50, 1, 64)
+samples = model.sample_ensemble(eeg, n_samples=50) # (50, 1, 256)
 mean, std = samples.mean(0), samples.std(0)
 ```
 
