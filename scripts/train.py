@@ -81,9 +81,6 @@ def _make_model_factory(cfg: Dict[str, Any], variant: str):
             embed_dim=int(m["embed_dim"]),
             velocity_layers=int(m["velocity_layers"]),
             n_inference_steps=int(m["n_inference_steps"]),
-            num_train_steps=int(m.get("num_train_steps", 10)),
-            flow_weight=float(m.get("flow_weight", 1.0)),
-            recon_weight=float(m.get("recon_weight", 1.0)),
             sigma_anneal_start=float(m.get("sigma_anneal_start", 0.5)),
             sigma_anneal_end=float(m.get("sigma_anneal_end", 0.1)),
             sigma_anneal_epochs=int(m.get("sigma_anneal_epochs", 10)),
@@ -124,6 +121,9 @@ def _run_one_seed(cfg: Dict[str, Any], seed: int, output_dir: Path,
         tmin=float(cfg["data"].get("tmin", -32.0)),
         tmax=float(cfg["data"].get("tmax", 0.0)),
         crop=int(cfg["model"]["input_length"]),
+        # Seq2seq horizon: must match the model's flow dimension. Sourced from
+        # the model section so model and data targets always agree.
+        n_out_timesteps=int(cfg["model"].get("n_out_timesteps", 4)),
     )
 
     def make_loaders(fold):
@@ -136,12 +136,10 @@ def _run_one_seed(cfg: Dict[str, Any], seed: int, output_dir: Path,
             n_channels=int(m["n_channels"]),
             input_length=int(m["input_length"]),
             n_rois=int(m["n_rois"]),
+            n_out_timesteps=int(m.get("n_out_timesteps", 4)),
             embed_dim=int(m["embed_dim"]),
             velocity_layers=int(m["velocity_layers"]),
             n_inference_steps=int(m["n_inference_steps"]),
-            num_train_steps=int(m.get("num_train_steps", 10)),
-            flow_weight=float(m.get("flow_weight", 1.0)),
-            recon_weight=float(m.get("recon_weight", 1.0)),
             prior_beta=float(m["prior_beta"]),
             prior_loss_weight=float(m["prior_loss_weight"]),
             prior_sigma_floor=float(m["prior_sigma_floor"]),

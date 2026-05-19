@@ -59,9 +59,18 @@ def main() -> None:
     model = BoldFlow.from_pretrained(args.checkpoint, device=device)
     model.eval()
 
+    # Seq2seq models flow in T_out*R space; reshape outputs to (B, T_out, R)
+    # so each predicted block of consecutive DiFuMo volumes is explicit.
+    t_out, n_rois = model.n_out_timesteps, model.n_rois
+
+    def _as_blocks(x: torch.Tensor) -> torch.Tensor:
+        return x.reshape(x.shape[0], t_out, n_rois) if t_out > 1 else x
+
     if args.ensemble > 0:
         mean, std = native_ensemble(model, eeg, n_samples=args.ensemble)
-        print(f"ensemble mean shape: {tuple(mean.shape)}, std shape: {tuple(std.shape)}")
+        mean, std = _as_blocks(mean), _as_blocks(std)
+        print(f"ensemble mean shape: {tuple(mean.shape)}, std shape: {tuple(std.shape)}"
+              + (f"  (B, T_out={t_out}, R={n_rois})" if t_out > 1 else ""))
         print(f"mean range: [{mean.min().item():.3f}, {mean.max().item():.3f}]")
         print(f"std  range: [{std.min().item():.3f}, {std.max().item():.3f}]")
         if args.output:
@@ -69,8 +78,9 @@ def main() -> None:
             print(f"saved to {args.output}")
     else:
         with torch.no_grad():
-            pred = model(eeg)
-        print(f"prediction shape: {tuple(pred.shape)}")
+            pred = _as_blocks(model(eeg))
+        print(f"prediction shape: {tuple(pred.shape)}"
+              + (f"  (B, T_out={t_out}, R={n_rois})" if t_out > 1 else ""))
         print(f"range: [{pred.min().item():.3f}, {pred.max().item():.3f}]")
         if args.output:
             np.savez(args.output, prediction=pred.cpu().numpy())

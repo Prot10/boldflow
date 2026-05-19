@@ -10,8 +10,9 @@ import logging
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
@@ -63,9 +64,51 @@ def _train_step(
     return float(loss.detach())
 
 
+def _overlap_average(
+    preds: np.ndarray, tgts: np.ndarray, t_out: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Overlap-average one scan's seq2seq blocks into a per-TR trajectory.
+
+    ``preds``/``tgts`` are ``(n_windows, T_out, R)`` for a single scan, with
+    windows in anchor (stride-1 TR) order. Window ``i`` offset ``t`` predicts
+    within-scan TR ``i + t``; averaging the ``T_out`` estimates of each TR is
+    the bagging-style aggregation of the paper (Eq. 9). Only *interior* TRs,
+    covered by all ``T_out`` windows, are returned.
+    """
+    n, _, r = preds.shape
+    n_tr = n + t_out - 1
+    acc = np.zeros((n_tr, r), dtype=np.float64)
+    cnt = np.zeros(n_tr, dtype=np.int64)
+    tgt = np.zeros((n_tr, r), dtype=np.float64)
+    for i in range(n):
+        for t in range(t_out):
+            j = i + t
+            acc[j] += preds[i, t]
+            tgt[j] = tgts[i, t]
+            cnt[j] += 1
+    interior = cnt == t_out
+    return (acc[interior] / t_out).astype(np.float32), tgt[interior].astype(np.float32)
+
+
 @torch.no_grad()
-def evaluate(model: BoldFlow, loader: DataLoader, device: str) -> Dict[str, Any]:
-    """Run ``model`` over ``loader``; return ``{predictions, targets, metrics}``."""
+def evaluate(
+    model: BoldFlow,
+    loader: DataLoader,
+    device: str,
+    *,
+    scan_sizes: Optional[List[Tuple[str, int]]] = None,
+    aggregate: bool = False,
+) -> Dict[str, Any]:
+    """Run ``model`` over ``loader``; return ``{predictions, targets, metrics}``.
+
+    For a seq2seq model (``model.n_out_timesteps > 1``) the raw predictions are
+    ``(N, T_out*R)`` blocks. With ``aggregate=True`` and ``scan_sizes`` (the
+    ordered ``[(scan, n_anchors), ...]`` list from :func:`create_cv_dataloaders`)
+    the blocks are overlap-averaged per scan into the per-TR trajectory and
+    metrics are computed on that (the headline protocol). Otherwise the blocks
+    are flattened ``(N, T_out, R) -> (N*T_out, R)`` for a quick per-block metric
+    (used for validation / model selection during training).
+    """
     model.eval()
     preds, targets = [], []
     for eeg, fmri in loader:
@@ -75,8 +118,37 @@ def evaluate(model: BoldFlow, loader: DataLoader, device: str) -> Dict[str, Any]
         targets.append(fmri.cpu())
     preds_t = torch.cat(preds, dim=0)
     targets_t = torch.cat(targets, dim=0)
-    metrics = all_metrics(preds_t, targets_t)
-    return {"predictions": preds_t, "targets": targets_t, "metrics": metrics}
+
+    t_out = int(getattr(model, "n_out_timesteps", 1))
+    if t_out <= 1:
+        metrics = all_metrics(preds_t, targets_t)
+        return {"predictions": preds_t, "targets": targets_t, "metrics": metrics}
+
+    r = preds_t.shape[1] // t_out
+    p3 = preds_t.numpy().reshape(-1, t_out, r)
+    t3 = targets_t.numpy().reshape(-1, t_out, r)
+
+    if not aggregate or not scan_sizes:
+        # Quick per-block metric: every (T_out, R) block flattened onto the
+        # sample axis. Used for validation / checkpoint selection.
+        pm = torch.from_numpy(p3.reshape(-1, r))
+        tm = torch.from_numpy(t3.reshape(-1, r))
+        return {"predictions": preds_t, "targets": targets_t,
+                "metrics": all_metrics(pm, tm)}
+
+    # Headline protocol: overlap-average per scan into the per-TR trajectory.
+    agg_p, agg_t, off = [], [], 0
+    for _, n_win in scan_sizes:
+        if n_win >= t_out:
+            ap, at = _overlap_average(p3[off:off + n_win], t3[off:off + n_win], t_out)
+            if len(ap):
+                agg_p.append(ap)
+                agg_t.append(at)
+        off += n_win
+    pred_traj = torch.from_numpy(np.concatenate(agg_p, axis=0))
+    true_traj = torch.from_numpy(np.concatenate(agg_t, axis=0))
+    return {"predictions": pred_traj, "targets": true_traj,
+            "metrics": all_metrics(pred_traj, true_traj)}
 
 
 def train_fold(
@@ -96,12 +168,15 @@ def train_fold(
     device: str = "cuda",
     output_dir: Optional[Path] = None,
     early_stopping_patience: Optional[int] = 10,
+    test_scan_sizes: Optional[List[Tuple[str, int]]] = None,
 ) -> FoldResult:
     """Train one fold with cosine-warmup LR and periodic validation.
 
     Saves ``best.pt`` under ``output_dir/fold_<idx>/`` whenever validation
     Pearson r improves; returns a :class:`FoldResult` with test metrics from
-    the best checkpoint.
+    the best checkpoint. For a seq2seq model the final test metrics use the
+    per-scan overlap-averaged trajectory (``test_scan_sizes`` from the loader
+    metadata); validation uses the quick per-block metric.
     """
     model = model.to(device)
     param_groups = get_param_groups(model, lr, weight_decay, layer_decay)
@@ -180,7 +255,8 @@ def train_fold(
     if best_state is not None:
         model.load_state_dict(best_state)
 
-    test = evaluate(model, test_loader, device)
+    test = evaluate(model, test_loader, device,
+                    scan_sizes=test_scan_sizes, aggregate=True)
     result.test_metrics = test["metrics"]
     result.train_loss = train_loss
     result.val_loss = val["metrics"]["mse"]
@@ -220,7 +296,7 @@ def run_cv(
 
     for fold_idx in folds_to_run:
         fold = splitter.get_fold(fold_idx)
-        train_loader, val_loader, test_loader, _ = create_loaders_fn(fold)
+        train_loader, val_loader, test_loader, meta = create_loaders_fn(fold)
 
         model = model_factory() if model_factory is not None else BoldFlow(**model_kwargs)
         if pretrained_encoder is not None and hasattr(model, "load_pretrained_encoder"):
@@ -232,6 +308,7 @@ def run_cv(
             warmup_epochs=warmup_epochs, max_grad_norm=max_grad_norm,
             mixed_precision=mixed_precision, device=device, output_dir=output_dir,
             early_stopping_patience=early_stopping_patience,
+            test_scan_sizes=(meta or {}).get("test_scan_sizes"),
         ))
     return results
 

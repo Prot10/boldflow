@@ -94,9 +94,15 @@ def main() -> None:
         tmin=float(cfg["data"].get("tmin", -32.0)),
         tmax=float(cfg["data"].get("tmax", 0.0)),
         crop=int(cfg["model"]["input_length"]),
+        n_out_timesteps=int(cfg["model"].get("n_out_timesteps", 4)),
     )
 
-    model = BoldFlow.from_pretrained(args.checkpoint, device=device)
+    # n_out_timesteps must match so the ensemble (B, T_out*R) and the loader
+    # targets (B, T_out*R) line up; UQ calibration then runs per element.
+    model = BoldFlow.from_pretrained(
+        args.checkpoint, device=device,
+        n_out_timesteps=int(cfg["model"].get("n_out_timesteps", 4)),
+    )
 
     print("Validation ensemble for calibration...")
     val_mean, val_std, val_target = collect_ensemble(model, val_loader, n_samples=args.n_samples, device=device)

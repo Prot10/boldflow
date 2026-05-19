@@ -64,7 +64,7 @@ def main() -> None:
     fold = splitter.get_fold(args.fold)
     print(f"Evaluating fold {args.fold}: {fold.n_test_scans} test scans.")
 
-    _, _, test_loader, _ = create_cv_dataloaders(
+    _, _, test_loader, meta = create_cv_dataloaders(
         cfg["data"]["data_root"], fold,
         dataset=cfg["data"]["dataset"],
         n_rois=int(cfg["data"]["n_rois"]),
@@ -82,6 +82,7 @@ def main() -> None:
         tmin=float(cfg["data"].get("tmin", -32.0)),
         tmax=float(cfg["data"].get("tmax", 0.0)),
         crop=int(cfg["model"]["input_length"]),
+        n_out_timesteps=int(cfg["model"].get("n_out_timesteps", 4)),
     )
 
     model = BoldFlow.from_pretrained(
@@ -89,12 +90,15 @@ def main() -> None:
         n_channels=int(cfg["model"]["n_channels"]),
         input_length=int(cfg["model"]["input_length"]),
         n_rois=int(cfg["model"]["n_rois"]),
+        n_out_timesteps=int(cfg["model"].get("n_out_timesteps", 4)),
         embed_dim=int(cfg["model"]["embed_dim"]),
         velocity_layers=int(cfg["model"]["velocity_layers"]),
         n_inference_steps=int(cfg["model"]["n_inference_steps"]),
     )
 
-    out = evaluate(model, test_loader, device)
+    # Seq2seq: report metrics on the per-scan overlap-averaged trajectory.
+    out = evaluate(model, test_loader, device,
+                   scan_sizes=meta.get("test_scan_sizes"), aggregate=True)
     print()
     print(f"Test metrics on fold {args.fold}:")
     for k, v in out["metrics"].items():

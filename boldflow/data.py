@@ -9,8 +9,8 @@ On-disk layout::
 The pickle is a ``pandas`` DataFrame (timepoints x ROIs); ``global signal``
 columns are dropped. The loader epochs EEG around fMRI triggers (``R149`` for
 NeuroBOLT, ``R128`` for sleep), filters EEG (0.5 Hz HP) and fMRI (0.15 Hz LP),
-z-scores the EEG per channel, and normalises each ROI by per-scan absolute
-95th percentile.
+z-scores the EEG per channel and clips it to +/-15 SD, and normalises each ROI
+by per-scan absolute 95th percentile.
 """
 from __future__ import annotations
 
@@ -67,18 +67,25 @@ def load_scan(
     apply_eeg_filter: bool = True,
     apply_fmri_filter: bool = True,
     normalize_eeg: bool = True,
+    clip_eeg: Optional[float] = 15.0,
     tr: float = 2.1,
     tmin: float = -32.0,
     tmax: float = 0.0,
     crop: int = 6400,
     eeg_lowpass: Optional[float] = None,
     exclude_non_neural: bool = False,
+    n_out_timesteps: int = 1,
 ) -> Tuple[List[np.ndarray], List[np.ndarray], Dict[str, Any]]:
     """Load and preprocess one paired EEG/fMRI scan.
 
     Returns ``(eeg_epochs, fmri_epochs, metadata)``: one entry per fMRI
-    volume with at least ``-tmin`` seconds of EEG history. Shapes are
-    ``(C, crop)`` and ``(R,)`` respectively.
+    anchor TR with at least ``-tmin`` seconds of EEG history. EEG shape is
+    ``(C, crop)``.
+
+    With ``n_out_timesteps=1`` (seq2one) each fMRI target is a single volume
+    of shape ``(R,)``. With ``n_out_timesteps=T>1`` (seq2seq) the target is
+    the block of ``T`` consecutive volumes ending at the anchor TR, shape
+    ``(T, R)``; anchors lacking ``T-1`` prior TRs are dropped.
     """
     spec = DATASETS[dataset]
     data_root = Path(data_root)
@@ -171,11 +178,32 @@ def load_scan(
         ch_mean = eeg_data.mean(axis=(0, 2), keepdims=True)
         ch_std = eeg_data.std(axis=(0, 2), keepdims=True) + 1e-8
         eeg_data = (eeg_data - ch_mean) / ch_std
+        # Clip to +/- clip_eeg standard deviations, matching the distribution
+        # seen during REVE pretraining (paper App. C). This only caps rare
+        # residual gradient/BCG artefacts: on NeuroBOLT it touches <0.02% of
+        # samples, and most scans never reach +/-15 at all.
+        if clip_eeg is not None:
+            eeg_data = np.clip(eeg_data, -clip_eeg, clip_eeg)
 
-    valid = epochs.selection
-    fmri_epochs_arr = fmri_np[:, valid]
-    eeg_epochs = [s[:, :crop] if crop > 0 else s for s in eeg_data]
-    fmri_epochs = [row.copy() for row in fmri_epochs_arr.T]
+    # Pair each EEG window with its fMRI target. ``epochs.selection`` gives the
+    # fMRI-trigger index of every retained EEG epoch, in scan order.
+    n_out = max(1, min(int(n_out_timesteps), 4))
+    n_tp = fmri_np.shape[1]
+    cropped = [s[:, :crop] if crop > 0 else s for s in eeg_data]
+
+    eeg_epochs: List[np.ndarray] = []
+    fmri_epochs: List[np.ndarray] = []
+    for i, idx in enumerate(epochs.selection):
+        if idx >= n_tp:
+            continue                       # trigger past the end of the fMRI run
+        if idx < n_out - 1:
+            continue                       # seq2seq: no T_out-1 prior TRs
+        eeg_epochs.append(cropped[i])
+        if n_out > 1:
+            # Block of T_out consecutive volumes ending at the anchor TR.
+            fmri_epochs.append(fmri_np[:, idx - (n_out - 1):idx + 1].T.copy())  # (T, R)
+        else:
+            fmri_epochs.append(fmri_np[:, idx].copy())                          # (R,)
 
     metadata = {
         "scan_name": scan_name,
@@ -183,13 +211,15 @@ def load_scan(
         "n_channels": eeg_epochs[0].shape[0] if eeg_epochs else 0,
         "n_samples": eeg_epochs[0].shape[1] if eeg_epochs else 0,
         "n_rois": len(selected_rois),
+        "n_out_timesteps": n_out,
         "roi_names": selected_rois,
         "channel_names": epochs.ch_names,
         "sfreq": epochs.info["sfreq"],
     }
     logger.info(
-        "Loaded %s: %d epochs, %d channels, %d ROIs",
-        scan_name, metadata["n_epochs"], metadata["n_channels"], metadata["n_rois"],
+        "Loaded %s: %d anchors, %d channels, %d ROIs, T_out=%d",
+        scan_name, metadata["n_epochs"], metadata["n_channels"],
+        metadata["n_rois"], n_out,
     )
     return eeg_epochs, fmri_epochs, metadata
 
@@ -217,11 +247,18 @@ def create_cv_dataloaders(
     """Train/val/test loaders for one CV fold.
 
     Extra ``load_kwargs`` are forwarded to :func:`load_scan` (e.g. ``tmin``,
-    ``tmax``, ``exclude_non_neural``).
+    ``tmax``, ``exclude_non_neural``, ``n_out_timesteps``).
+
+    For seq2seq (``n_out_timesteps>1``) the per-anchor ``(T, R)`` targets are
+    flattened to ``(T*R,)`` so the model flows in ``T*R`` space. The returned
+    metadata carries ``n_out_timesteps`` and, for the val/test splits,
+    ``*_scan_sizes`` (an ordered ``[(scan_name, n_anchors), ...]`` list) so the
+    evaluator can overlap-average the predicted blocks per scan.
     """
     splits = {"train": fold.train_scans, "val": fold.val_scans, "test": fold.test_scans}
     eeg = {k: [] for k in splits}
     fmri = {k: [] for k in splits}
+    scan_sizes = {k: [] for k in splits}
     metadata: Optional[Dict[str, Any]] = None
 
     for split_name, scans in splits.items():
@@ -237,13 +274,20 @@ def create_cv_dataloaders(
             )
             eeg[split_name].extend(scan_eeg)
             fmri[split_name].extend(scan_fmri)
+            scan_sizes[split_name].append((scan, len(scan_eeg)))
             metadata = metadata or meta
 
     train_eeg, train_fmri = _stack(eeg["train"]), _stack(fmri["train"])
     val_eeg, val_fmri = _stack(eeg["val"]), _stack(fmri["val"])
     test_eeg, test_fmri = _stack(eeg["test"]), _stack(fmri["test"])
 
-    if not multi_roi:
+    n_out = max(1, min(int(load_kwargs.get("n_out_timesteps", 1) or 1), 4))
+    if n_out > 1:
+        # Flatten the (N, T, R) blocks to (N, T*R): the model flows in T*R space.
+        train_fmri = train_fmri.reshape(train_fmri.shape[0], -1)
+        val_fmri = val_fmri.reshape(val_fmri.shape[0], -1)
+        test_fmri = test_fmri.reshape(test_fmri.shape[0], -1)
+    elif not multi_roi:
         if train_fmri.ndim == 2 and train_fmri.shape[1] == 1:
             train_fmri = train_fmri.squeeze(1)
             val_fmri = val_fmri.squeeze(1)
@@ -258,9 +302,14 @@ def create_cv_dataloaders(
             num_workers=num_workers, pin_memory=pin_memory, drop_last=drop_last,
         )
 
+    out_meta = dict(metadata or {})
+    out_meta["n_out_timesteps"] = n_out
+    out_meta["val_scan_sizes"] = scan_sizes["val"]
+    out_meta["test_scan_sizes"] = scan_sizes["test"]
+
     return (
         loader(TensorDataset(train_eeg, train_fmri), shuffle=True, drop_last=True, bs=batch_size),
         loader(TensorDataset(val_eeg, val_fmri), shuffle=False, drop_last=False, bs=eval_bs),
         loader(TensorDataset(test_eeg, test_fmri), shuffle=False, drop_last=False, bs=eval_bs),
-        metadata or {},
+        out_meta,
     )
