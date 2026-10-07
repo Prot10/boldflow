@@ -27,6 +27,7 @@ model:
   sigma_anneal_start: 0.5
   sigma_anneal_end: 0.1
   sigma_anneal_epochs: 10
+  ot_coupling: true            # minibatch OT pairing of source and target
 
 training:
   epochs: 30

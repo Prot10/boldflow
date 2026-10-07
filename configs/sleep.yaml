@@ -1,6 +1,6 @@
 # BOLDFlow on OpenNeuroSleep (paper Table 1).
-# Same architecture as the NeuroBOLT config; differences are dataset, channel
-# count, and an extra EEG lowpass.
+# Same architecture as the NeuroBOLT config; differences are dataset and
+# channel count.
 # Paper values: MSE = 0.255,  T.Corr = 0.212 +/- 0.001,  FC Corr = 0.528 +/- 0.017
 #
 # data.data_root: pass --data-root, set BOLDFLOW_DATA_ROOT, or edit below.
@@ -50,7 +50,6 @@ data:
   apply_eeg_filter: true
   apply_fmri_filter: true
   normalize_eeg: true
-  eeg_lowpass: 70.0       # extra lowpass for sleep EEG
   exclude_non_neural: false
   num_workers: 4
   pin_memory: true

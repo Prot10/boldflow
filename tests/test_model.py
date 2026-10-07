@@ -230,3 +230,15 @@ def test_point_prior_ablation_trains_and_anneals():
     with torch.no_grad():
         pred = m(eeg)
     assert pred.shape == (2, 8)
+
+
+def test_ot_pair_is_a_valid_coupling():
+    """OT pairing returns rows of the inputs and never increases transport cost."""
+    from boldflow.ablations import ot_pair
+
+    torch.manual_seed(0)
+    x0, x1 = torch.randn(16, 5), torch.randn(16, 5)
+    a, b = ot_pair(x0, x1)
+    assert a.shape == x0.shape and b.shape == x1.shape
+    assert all((x1 == row).all(dim=1).any() for row in b)
+    assert (a - b).pow(2).sum(1).mean() <= (x0 - x1).pow(2).sum(1).mean() + 1e-6

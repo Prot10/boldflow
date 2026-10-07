@@ -84,6 +84,7 @@ def _make_model_factory(cfg: Dict[str, Any], variant: str):
             sigma_anneal_start=float(m.get("sigma_anneal_start", 0.5)),
             sigma_anneal_end=float(m.get("sigma_anneal_end", 0.1)),
             sigma_anneal_epochs=int(m.get("sigma_anneal_epochs", 10)),
+            ot_coupling=bool(m.get("ot_coupling", True)),
         )
         return lambda: BoldFlowPointPrior(**kwargs)
     return None  # falls back to BoldFlow(**model_kwargs) inside run_cv

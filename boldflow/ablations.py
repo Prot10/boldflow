@@ -12,7 +12,7 @@ sweeps over configuration knobs of the headline architecture; see
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -39,6 +39,23 @@ def _point_prior_mlp(
     )
 
 
+def ot_pair(x0: torch.Tensor, x1: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Minibatch optimal-transport coupling (Tong et al., 2024).
+
+    Solves the exact assignment between the source and target batches under
+    squared Euclidean cost, then draws ``B`` pairs from the resulting plan
+    with replacement.
+    """
+    from scipy.optimize import linear_sum_assignment
+
+    cost = torch.cdist(x0.detach().float(), x1.detach().float()).pow(2)
+    rows, cols = linear_sum_assignment(cost.cpu().numpy())
+    pick = torch.randint(len(rows), (len(rows),)).numpy()
+    i = torch.as_tensor(rows[pick], device=x0.device)
+    j = torch.as_tensor(cols[pick], device=x1.device)
+    return x0[i], x1[j]
+
+
 class BoldFlowPointPrior(nn.Module):
     """Ablation: deterministic prior + fixed-scale, sigma-annealed source.
 
@@ -47,6 +64,8 @@ class BoldFlowPointPrior(nn.Module):
       * Source is ``x_0 = mu.detach() + sigma * eps`` with ``sigma`` annealed
         from ``sigma_anneal_start`` to ``sigma_anneal_end`` over the first
         ``sigma_anneal_epochs`` epochs.
+      * Source and target batches are re-paired by minibatch optimal
+        transport (``ot_coupling=True``) instead of index-wise I-CFM pairing.
       * Auxiliary loss is plain MSE on ``mu`` (no beta-NLL).
       * Inference integrates from ``x_0 = mu``.
 
@@ -65,8 +84,10 @@ class BoldFlowPointPrior(nn.Module):
         sigma_anneal_start: float = 0.5,
         sigma_anneal_end: float = 0.1,
         sigma_anneal_epochs: int = 10,
+        ot_coupling: bool = True,
     ):
         super().__init__()
+        self.ot_coupling = ot_coupling
         self.n_inference_steps = n_inference_steps
         self.sigma_anneal_start = sigma_anneal_start
         self.sigma_anneal_end = sigma_anneal_end
@@ -138,6 +159,8 @@ class BoldFlowPointPrior(nn.Module):
             # CFM matching loss (mu is detached so the flow gradient does not
             # update the prior net; aux MSE on mu provides that signal).
             x0 = mu.detach() + self.current_sigma * torch.randn_like(mu)
+            if self.ot_coupling:
+                x0, x1 = ot_pair(x0, x1)
             t = torch.rand(x0.shape[0], device=eeg.device).clamp(1e-5, 1 - 1e-5)
             xt = (1 - t.unsqueeze(1)) * x0 + t.unsqueeze(1) * x1
             ut = x1 - x0
@@ -146,7 +169,7 @@ class BoldFlowPointPrior(nn.Module):
 
             # Auxiliary MSE on the prior mean (replaces the beta-NLL term;
             # the prior net only learns through this channel).
-            aux_loss = F.mse_loss(mu, x1)
+            aux_loss = F.mse_loss(mu, fmri_target)
 
             return flow_loss + aux_loss
 
