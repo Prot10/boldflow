@@ -108,8 +108,8 @@ class AdaLNVelocityNet(nn.Module):
 class DistributionalPrior(nn.Module):
     """Learned per-sample Gaussian over the flow source.
 
-    ``sigma = softplus(raw) + sigma_floor``; the floor prevents posterior
-    collapse. ``sigma_head.bias`` is initialised so ``sigma(t=0) ~= init_sigma``.
+    ``sigma = softplus(raw) + sigma_floor``; the floor keeps the source scale
+    strictly positive. ``sigma_head.bias`` is initialised so ``sigma(t=0) ~= init_sigma``.
     """
 
     def __init__(
@@ -153,8 +153,10 @@ def beta_nll(
 ) -> torch.Tensor:
     """Beta-NLL loss (Seitzer et al., ICLR 2022).
 
-    Detaches ``sigma^{2 beta}`` in the weight to decouple mean and variance
-    gradients. ``beta=0`` recovers MSE, ``beta=1`` naive NLL, 0.5 is default.
+    Multiplies the Gaussian NLL by ``stopgrad(sigma^{2 beta})`` (paper Eq. 5).
+    ``beta=0`` is the ordinary Gaussian NLL; ``beta=1`` makes the mean gradient
+    MSE-like while the variance is still trained through the NLL term; 0.5 is
+    the default.
     """
     var = sigma.pow(2).clamp(min=eps)
     residual_sq = (target - mu).pow(2)

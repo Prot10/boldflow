@@ -1,5 +1,5 @@
 # BOLDFlow on NeuroBOLT (paper Table 1 headline configuration).
-# 5-fold inter-subject CV reproduces:
+# Paper values (5-fold subject-disjoint CV, 3 seeds, sampled trajectory M=1):
 #   MSE = 0.239,  T.Corr = 0.326 +/- 0.008,  FC Corr = 0.584 +/- 0.017
 #
 # data.data_root resolution order (any of these works):

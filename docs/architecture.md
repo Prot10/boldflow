@@ -42,10 +42,7 @@ the implementing module.
 * A learnable channel token plus sinusoidal positional encoding tags each
   channel; 26 channels are concatenated to `(B, 1664, 512)` and pooled by a
   4-layer linear-attention transformer (mean pool over tokens).
-* Approx. 13.0 M parameters; trained from scratch. (The previous BOLDFlow
-  prototypes used a 200-dim variant at ~4.6 M parameters; the released
-  configuration uses the wider 512-dim variant for a stronger spectral
-  pathway, at the cost of more parameters.)
+* Approx. 13.0 M parameters; trained from scratch.
 
 ## Fusion
 
@@ -82,29 +79,50 @@ x_1 = fmri_target
 x_t = (1 - t) * x_0 + t * x_1     (I-CFM linear path)
 v_target = x_1 - x_0
 
-L = MSE(v_theta(x_t, t, z_eeg), v_target) + beta_NLL(mu, sigma, x_1; beta=0.5)
+L = MSE(v_theta(x_t, t, z_eeg), v_target) + lambda * beta_NLL(mu, sigma, x_1; beta=0.5)
 ```
 
-`beta_NLL` is the Seitzer (2022) loss; `beta = 0.5` decouples mean and
-variance gradients without losing all NLL effects, and is the
-recommended default.
+with `lambda = 1`. `beta_NLL` is the Seitzer (2022) loss: the Gaussian NLL
+multiplied by `stopgrad(sigma^(2 beta))`, which stops gradients through the
+variance-dependent weight while the NLL term updates mean and variance. The
+source sample is reparameterised without detaching `mu` or `sigma`, so the
+flow objective also updates the source.
 
 ## Inference
 
-Point estimate: `x_0 = mu`, integrate 50 explicit Euler steps with
-`v_theta(x, t, z_eeg)`. The raw output is the flattened `(B, T_out * R)`
-block; reshape to `(B, T_out, R)` for the per-TR volumes.
-
-Ensemble: draw `K` source samples `x_0_k = mu + sigma * eps_k`, integrate
-each, stack outputs to `(K, B, T_out * R)`. Per-sample per-element
-uncertainty is the standard deviation across ensemble members; the ensemble
-mean is a strong free point estimate.
+Every prediction draws a source `x_0 = mu + sigma * eps` and integrates 50
+explicit Euler steps with `v_theta(x, t, z_eeg)`. The raw output is the
+flattened `(B, T_out * R)` block; reshape to `(B, T_out, R)` for the per-TR
+volumes.
 
 Overlap-averaging (seq2seq, `T_out > 1`): neighbouring EEG windows are
-stride-1 in TR, so every interior fMRI TR is predicted by `T_out` different
-windows. The evaluator (`boldflow.training.evaluate`, `aggregate=True`)
-averages the `T_out` estimates of each TR per scan into the final per-TR
-trajectory before computing T.Corr / FC Corr.
+stride-1 in TR, so a TR is covered by `K_t <= T_out` blocks. The evaluator
+(`boldflow.training.evaluate`, `aggregate=True`) averages those estimates per
+scan into the per-TR trajectory (paper Eq. 8).
+
+Sampled trajectory (`M = 1`): one independent source draw per anchor,
+overlap-averaged. This is the readout used for FC and for the main
+comparison.
+
+Ensemble (`M > 1`): repeat the full procedure independently `M` times. The
+ensemble mean averages the trajectories before any metric is computed; it
+improves pointwise accuracy while attenuating the residual covariance by
+`1/M`. UQ uses the per-TR, per-component mean and Bessel-corrected standard
+deviation of `M = 50` trajectories, with a validation-fitted scalar
+recalibration of the latter.
+
+Deterministic readout: `x_0 = mu` (`model(eeg, sample=False)`).
+
+## Evaluation metrics
+
+* MSE: all TRs and all output components, in normalised target units.
+* T. Corr.: Pearson correlation per component within each scan, averaged over
+  components and scans.
+* FC Corr.: Pearson correlation between the upper triangles of the predicted
+  and measured FC matrices, computed within each scan and averaged across
+  scans. FC uses the components assigned to a cortical network in the atlas
+  metadata (`boldflow.difumo.cortical_network_indices`; 55 of the 64 DiFuMo-64
+  components).
 
 ## Total parameter count
 

@@ -1,6 +1,6 @@
-# Ablation: BOLDFlow with a point (detached) prior.
-# Reproduces Table 2 row "+ AdaLN-Zero CFM, detached prior":
-#   T.Corr = 0.321 +/- 0.011, FC Corr = 0.442
+# Ablation: BOLDFlow with a point (detached) prior and a fixed-scale source.
+# Fixed-sigma AdaLN-Zero configuration of the decoder ablation
+# (row L4 of Table 6, FC Corr = 0.442).
 # Identical to configs/neurobolt.yaml except this variant uses
 # boldflow.ablations.BoldFlowPointPrior. The config flag below tells
 # scripts/train.py which model class to instantiate.

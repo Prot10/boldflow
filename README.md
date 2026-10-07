@@ -1,18 +1,25 @@
 # BOLDFlow
 
-**Network-Level EEG-to-fMRI Synthesis via Conditional Flow Matching**
+**Network-Level Recovery of fMRI Connectivity from EEG via Conditional Flow Matching**
 
-BOLDFlow predicts parcellated fMRI from concurrent EEG, training end-to-end
-with a conditional flow matching decoder whose source distribution is a
-learned per-sample Gaussian. The same model produces a strong point estimate
-and well-calibrated, sample-level uncertainty through native ODE ensembling.
+BOLDFlow models the conditional distribution of parcellated BOLD activity
+given concurrent EEG, using conditional flow matching with a learned
+EEG-conditioned Gaussian source. Regional trajectories are sampled jointly, so
+they carry the model's residual cross-region covariance into functional
+connectivity (FC) estimation; repeated draws give an input-conditional
+ensemble spread that reaches nominal coverage after a single-parameter
+recalibration.
 
 | Dataset         | MSE                | T. Corr.            | FC Corr.            |
 | --------------- | ------------------ | ------------------- | ------------------- |
 | NeuroBOLT       | 0.239 (±0.002)     | **0.326** (±0.008)  | **0.584** (±0.017)  |
 | OpenNeuroSleep  | 0.255 (±0.001)     | **0.212** (±0.001)  | **0.528** (±0.017)  |
 
-5-fold inter-subject CV with 3 seeds per fold, DiFuMo-64.
+5-fold subject-disjoint CV with 3 seeds per fold (mean ± std over 15 runs),
+DiFuMo-64. All three metrics use the same sampled trajectory (`M = 1`: one
+source draw per anchor, overlap-averaged). MSE and T. Corr. summarise the 64
+output components; FC Corr. is computed within each scan on the fixed
+55-component cortical mask (`boldflow.difumo.cortical_network_indices`).
 
 ## Architecture
 
@@ -38,15 +45,21 @@ Total: ~96.4 M parameters at the default embed_dim=512, n_out_timesteps=4.
 `n_out_timesteps` consecutive DiFuMo volumes ending at the anchor TR (the
 paper headline uses `T_out = 4`), so the flow dimension is
 `D = n_rois * n_out_timesteps = 256`. Because neighbouring windows overlap,
-every interior TR is predicted `T_out` times; evaluation overlap-averages
+each TR is covered by up to `T_out` blocks; evaluation overlap-averages
 those estimates into the final per-TR trajectory. Set `n_out_timesteps=1`
 for the seq2one variant (`D = n_rois`).
 
 Training loss: `MSE(v, x_1 - x_0) + lambda * beta_NLL(mu, sigma, x_1)` with
 `lambda = 1`, `beta = 0.5`, I-CFM (no OT rematching).
 
-Inference (point): `Euler(mu)`. Inference (ensemble UQ): draw `K = 50` samples
-`x_0_k = mu + sigma * eps_k`, integrate each, return `(mean, std)`.
+Inference draws a source `x_0 = mu + sigma * eps` per anchor and integrates it.
+
+* Sampled trajectory (`M = 1`, default; used for FC and the main comparison):
+  one draw per anchor, blocks overlap-averaged per scan.
+* Ensemble (`M = 50`, used for UQ): repeat the procedure independently and
+  take the per-TR mean and standard deviation.
+* Deterministic readout: `x_0 = mu` (`model(eeg, sample=False)`,
+  `scripts/evaluate.py --deterministic`).
 
 ## Installation
 
@@ -90,7 +103,7 @@ from boldflow import BoldFlow
 
 model = BoldFlow()                                 # ~96.4 M parameters, T_out=4
 eeg = torch.randn(1, 26, 6400).clamp(-15, 15)      # 32 s @ 200 Hz, z-scored
-prediction = model(eeg)                            # (1, 256) = 4 x DiFuMo-64
+prediction = model(eeg)                            # (1, 256) = 4 x DiFuMo-64, one source draw
 blocks = prediction.reshape(1, 4, 64)              # (1, T_out, R) per-TR volumes
 
 # Native ensemble UQ:
@@ -143,7 +156,8 @@ Scan name pattern is `sub01-scan01` for NeuroBOLT and
 ## Inference / Evaluation
 
 ```bash
-# Evaluate a fold's test split
+# Evaluate a fold's test split (sampled trajectory, M=1; add --deterministic
+# for the source-mean readout)
 python scripts/evaluate.py \
     --config configs/neurobolt.yaml \
     --checkpoint outputs/boldflow_neurobolt/fold_1/best.pt \
@@ -182,8 +196,8 @@ boldflow/
     flow.py                    AdaLN-Zero velocity, distributional prior, beta-NLL, Euler ODE
     data.py                    NeuroBOLT + OpenNeuroSleep loaders
     splits.py                  subject-level K-fold CV
-    difumo.py                  DiFuMo labels and non-neural masks
-    metrics.py                 MSE, MAE, R2, T.Corr, Spearman, FC Corr
+    difumo.py                  DiFuMo labels, non-neural and cortical-network masks
+    metrics.py                 MSE, MAE, R2, T.Corr, Spearman, FC Corr (masked, per scan)
     schedulers.py              cosine warmup + layer-wise LR decay
     training.py                per-fold loop + K-fold runner + evaluate
     uncertainty.py             native ensemble + ScalarRecalibration + SplitConformal + AUSE/ECE
@@ -204,9 +218,9 @@ boldflow/
 
 The release also exposes the **point-prior ablation** as
 `boldflow.ablations.BoldFlowPointPrior` with config
-`configs/ablation_point_prior.yaml`. This loads the original
-`p28c_adaln_32s` checkpoint with zero key mismatches and reproduces the
-"+ AdaLN-Zero CFM, detached prior" row of Table 2 (T.Corr=0.321, FC=0.442).
+`configs/ablation_point_prior.yaml`: a fixed-scale source in place of the
+learned one, the fixed-sigma AdaLN-Zero configuration of the decoder ablation
+(row L4 of Table 6, FC Corr 0.442).
 
 ## Tests
 

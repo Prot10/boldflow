@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--variant", type=str, default=None,
                    choices=("default", "point_prior"),
                    help="Which model class to train. Defaults to BoldFlow; "
-                        "use point_prior for the Table 2 detached-prior ablation.")
+                        "use point_prior for the fixed-sigma ablation (Table 6, L4).")
     p.add_argument("--data-root", type=str, default=None,
                    help=f"Override data root (env: {ENV_DATA_ROOT}).")
     p.add_argument("--output-dir", type=str, default=None,

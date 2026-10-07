@@ -2,7 +2,7 @@
 
 Pipeline:
     1. Run ``M`` flow trajectories from samples of the distributional prior.
-       Use ``samples.mean(0)`` as the point estimate, ``samples.std(0)`` as
+       Use ``samples.mean(0)`` as the prediction centre, ``samples.std(0)`` as
        the raw uncertainty.
     2. Fit ``ScalarRecalibration`` on a held-out validation split so that
        ``alpha * std`` matches expected residual magnitude.

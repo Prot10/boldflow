@@ -61,13 +61,19 @@ python scripts/evaluate.py \
     --save-predictions outputs/.../predictions_fold1.pt
 ```
 
-The headline numbers (Table 1 NeuroBOLT row):
+`evaluate.py` follows the protocol of the main comparison: one sampled
+trajectory per scan (`M = 1`, one source draw per anchor, overlap-averaged),
+MSE and T. Corr. over all 64 components, FC Corr. within each scan on the
+55-component cortical mask. Pass `--deterministic` for the source-mean
+readout. Paper values (Table 1, NeuroBOLT row, mean over 5 folds x 3 seeds):
 
 ```
 mean_test_mse            = 0.239
 mean_test_pearson_r      = 0.326
 mean_test_fc_correlation = 0.584
 ```
+
+Because the readout is stochastic, single-run values vary with the seed.
 
 ## 4. Uncertainty quantification
 
@@ -78,15 +84,17 @@ python scripts/run_uncertainty.py \
     --fold 1 --output uq_fold_1.json
 ```
 
-50-member native ensemble + scalar recalibration + split conformal. Paper
-UQ headline (Table on UQ comparison, NeuroBOLT):
+50-member native ensemble with a validation-fitted scalar recalibration.
+Paper values for the recalibrated native ensemble (Table 2, NeuroBOLT):
 
 ```
+Spearman residual/std = 0.155
+Calibration Error     = 0.011
 Coverage@95           = 0.948
-AUSE                  = -0.108   (best on table)
-Spearman residual/std =  0.225
-Calibration Error     =  0.011
 ```
+
+The script additionally reports AUSE and split-conformal coverage, which are
+not part of the paper tables.
 
 ## 5. Figures
 
@@ -115,14 +123,11 @@ python scripts/make_qualitative.py \
 
 The release ships one ablation variant via `boldflow.ablations`:
 
-* **Point-prior (Table 2 row "+ AdaLN-Zero CFM, detached prior")** --
-  `boldflow.ablations.BoldFlowPointPrior`. Reproduces T.Corr=0.321,
-  FC Corr=0.442. Train it directly via the Python API with
-  `boldflow.training.train_fold` (see `tests/test_model.py` for an example),
-  or load the official p28c checkpoint with
-  `BoldFlowPointPrior().load_state_dict(...)`.
+* **Point-prior (fixed-sigma AdaLN-Zero, row L4 of Table 6, FC Corr 0.442)**
+  -- `boldflow.ablations.BoldFlowPointPrior`. Train it with
+  `python scripts/train.py --config configs/ablation_point_prior.yaml`.
 
-The other Table 1 baselines (NeuroBOLT, NeuroBOLT+, REVE-NoFT, REVE-FT) are
+The other Table 1 baselines (NeuroBOLT joint, NeuroBOLT†, REVE-NoFT, REVE-FT) are
 reimplementations of independently-published architectures; we point readers
 to the original NeuroBOLT and REVE repositories for those baselines.
 

@@ -1,15 +1,14 @@
-"""Ablation variants of BOLDFlow used in the paper's Tables 2-3.
+"""Ablation variant of BOLDFlow with a fixed-scale source.
 
 The full BOLDFlow uses a learned per-sample distributional prior. This
-module ships the **point-prior** ablation, which replaces the distributional
-prior with a deterministic ``mu`` and a noise-annealed source. This is the
-"+ AdaLN-Zero CFM, detached prior" row of Table 2 (T.Corr=0.321, FC=0.442).
+module ships the **point-prior** ablation, which replaces it with a
+deterministic ``mu`` and a fixed-scale, noise-annealed source: the
+fixed-sigma AdaLN-Zero configuration of the decoder ablation (row L4 of
+Table 6, FC Corr 0.442).
 
-For paper Tables 1, 3 and the rest of the ablation rows we point readers
-back to the relevant configuration knobs (e.g. ``model.embed_dim``,
-``model.n_inference_steps``, ``data.tmin``) and to the exposition in the
-paper appendices; the ablations are mechanical sweeps over the headline
-architecture rather than independent codepaths.
+The other ablations (context length, parcellation, seq2seq horizon) are
+sweeps over configuration knobs of the headline architecture; see
+``docs/reproducing.md``.
 """
 from __future__ import annotations
 
@@ -28,7 +27,7 @@ def _point_prior_mlp(
     cond_dim: int = 512, flow_dim: int = 64,
     hidden_1: int = 256, hidden_2: int = 128, dropout: float = 0.1,
 ) -> nn.Sequential:
-    """Deterministic prior MLP. Layout matches the released p28c checkpoint.
+    """Deterministic prior MLP.
 
     Keys: ``detached_prior_net.{0,3,6}.weight`` (three ``nn.Linear`` layers
     at positions 0, 3, 6 inside the ``Sequential``).
@@ -41,7 +40,7 @@ def _point_prior_mlp(
 
 
 class BoldFlowPointPrior(nn.Module):
-    """Ablation: deterministic prior + sigma-annealed source + OT coupling.
+    """Ablation: deterministic prior + fixed-scale, sigma-annealed source.
 
     Differences vs. :class:`BoldFlow`:
       * ``self.detached_prior_net`` replaces ``self.distributional_prior_head``.
@@ -49,13 +48,10 @@ class BoldFlowPointPrior(nn.Module):
         from ``sigma_anneal_start`` to ``sigma_anneal_end`` over the first
         ``sigma_anneal_epochs`` epochs.
       * Auxiliary loss is plain MSE on ``mu`` (no beta-NLL).
-      * Inference draws ``x_0 = mu`` (no ensembling).
+      * Inference integrates from ``x_0 = mu``.
 
-    Two-term loss, matching the ``boldflow.py`` reference implementation:
-    ``L = MSE(v, x1 - x0) + MSE(mu, x1)`` (CFM term + auxiliary prior MSE).
-
-    This reproduces the Table 2 ablation row "+ AdaLN-Zero CFM, detached
-    prior" with paper headline T.Corr=0.321 +/- 0.011, FC Corr=0.442.
+    Two-term loss: ``L = MSE(v, x1 - x0) + MSE(mu, x1)`` (CFM term +
+    auxiliary prior MSE).
     """
 
     def __init__(
@@ -105,7 +101,6 @@ class BoldFlowPointPrior(nn.Module):
             n_layers=velocity_layers,
             time_embed_dim=int(d["velocity_time_dim"]),
         )
-        # Attribute name and inner key layout match the released p28c checkpoint.
         self.detached_prior_net = _point_prior_mlp(
             cond_dim=embed_dim, flow_dim=n_rois,
             hidden_1=int(d["prior_hidden_1"]),
