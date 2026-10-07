@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import torch
 
+from boldflow.analysis import model_kwargs, scan_load_kwargs
 from boldflow.data import create_cv_dataloaders
 from boldflow.model import BoldFlow
 from boldflow.splits import SubjectLevelCVSplitter
@@ -69,35 +70,13 @@ def main() -> None:
 
     _, _, test_loader, meta = create_cv_dataloaders(
         cfg["data"]["data_root"], fold,
-        dataset=cfg["data"]["dataset"],
-        n_rois=int(cfg["data"]["n_rois"]),
-        target_roi=cfg["data"].get("target_roi"),
-        multi_roi=bool(cfg["data"].get("multi_roi", True)),
         batch_size=int(cfg["training"]["batch_size"]),
         num_workers=int(cfg["data"].get("num_workers", 4)),
         pin_memory=bool(cfg["data"].get("pin_memory", True)),
-        apply_eeg_filter=bool(cfg["data"].get("apply_eeg_filter", True)),
-        apply_fmri_filter=bool(cfg["data"].get("apply_fmri_filter", True)),
-        normalize_eeg=bool(cfg["data"].get("normalize_eeg", True)),
-        eeg_lowpass=cfg["data"].get("eeg_lowpass"),
-        exclude_non_neural=bool(cfg["data"].get("exclude_non_neural", False)),
-        tr=float(cfg["data"].get("tr", 2.1)),
-        tmin=float(cfg["data"].get("tmin", -32.0)),
-        tmax=float(cfg["data"].get("tmax", 0.0)),
-        crop=int(cfg["model"]["input_length"]),
-        n_out_timesteps=int(cfg["model"].get("n_out_timesteps", 4)),
+        **scan_load_kwargs(cfg),
     )
 
-    model = BoldFlow.from_pretrained(
-        args.checkpoint, device=device,
-        n_channels=int(cfg["model"]["n_channels"]),
-        input_length=int(cfg["model"]["input_length"]),
-        n_rois=int(cfg["model"]["n_rois"]),
-        n_out_timesteps=int(cfg["model"].get("n_out_timesteps", 4)),
-        embed_dim=int(cfg["model"]["embed_dim"]),
-        velocity_layers=int(cfg["model"]["velocity_layers"]),
-        n_inference_steps=int(cfg["model"]["n_inference_steps"]),
-    )
+    model = BoldFlow.from_pretrained(args.checkpoint, device=device, **model_kwargs(cfg))
 
     # Headline protocol: one sampled trajectory per scan (overlap-averaged for
     # seq2seq), FC Corr within scan on the cortical component mask.

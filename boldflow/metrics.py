@@ -1,4 +1,4 @@
-"""Evaluation metrics: MSE, MAE, R2, Pearson r (T.Corr), Spearman, FC Corr."""
+"""Evaluation metrics: MSE, Pearson r (T.Corr), FC Corr."""
 from __future__ import annotations
 
 from typing import Dict, Optional, Sequence
@@ -18,19 +18,6 @@ def mse(pred: torch.Tensor, target: torch.Tensor) -> float:
     return float(((pred - target) ** 2).mean())
 
 
-def mae(pred: torch.Tensor, target: torch.Tensor) -> float:
-    """Mean absolute error."""
-    return float((pred - target).abs().mean())
-
-
-def r2_score(pred: torch.Tensor, target: torch.Tensor) -> float:
-    """Coefficient of determination."""
-    p, t = _to_numpy(pred), _to_numpy(target)
-    ss_res = ((t - p) ** 2).sum()
-    ss_tot = ((t - t.mean()) ** 2).sum() + 1e-12
-    return float(1.0 - ss_res / ss_tot)
-
-
 def pearson_r(pred: torch.Tensor, target: torch.Tensor) -> float:
     """Per-ROI Pearson r averaged across ROIs (T.Corr in the paper).
 
@@ -45,22 +32,6 @@ def pearson_r(pred: torch.Tensor, target: torch.Tensor) -> float:
     den = np.sqrt((p ** 2).sum(axis=0) * (t ** 2).sum(axis=0)) + 1e-12
     r = num / den
     return float(np.nan_to_num(r).mean())
-
-
-def spearman_r(pred: torch.Tensor, target: torch.Tensor) -> float:
-    """Per-ROI Spearman r averaged across ROIs."""
-    from scipy.stats import spearmanr
-    p, t = _to_numpy(pred), _to_numpy(target)
-    if p.ndim == 1:
-        p, t = p[:, None], t[:, None]
-    rs = []
-    for r in range(p.shape[1]):
-        if np.std(t[:, r]) < 1e-8 or np.std(p[:, r]) < 1e-8:
-            continue
-        rho, _ = spearmanr(p[:, r], t[:, r])
-        if not np.isnan(rho):
-            rs.append(rho)
-    return float(np.mean(rs)) if rs else 0.0
 
 
 def _upper_tri(matrix: np.ndarray) -> np.ndarray:
@@ -123,9 +94,6 @@ def all_metrics(
     """Compute every metric used by :mod:`boldflow.training`."""
     return {
         "mse": mse(pred, target),
-        "mae": mae(pred, target),
-        "r2": r2_score(pred, target),
         "pearson_r": pearson_r(pred, target),
-        "spearman_r": spearman_r(pred, target),
         "fc_correlation": fc_correlation(pred, target, fc_components),
     }

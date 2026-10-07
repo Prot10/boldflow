@@ -242,3 +242,19 @@ def test_ot_pair_is_a_valid_coupling():
     assert a.shape == x0.shape and b.shape == x1.shape
     assert all((x1 == row).all(dim=1).any() for row in b)
     assert (a - b).pow(2).sum(1).mean() <= (x0 - x1).pow(2).sum(1).mean() + 1e-6
+
+
+def test_reduced_montage_model():
+    """A reduced montage is selected by passing its channel names as channel_order."""
+    from boldflow.encoders import REDUCED_6_CHANNEL_ORDER, STANDARD_19_CHANNEL_ORDER
+
+    assert set(REDUCED_6_CHANNEL_ORDER) < set(STANDARD_19_CHANNEL_ORDER)
+    for order in (STANDARD_19_CHANNEL_ORDER, REDUCED_6_CHANNEL_ORDER):
+        model = BoldFlow(
+            n_channels=len(order), input_length=1600, n_rois=8, n_out_timesteps=1,
+            embed_dim=64, velocity_layers=2, n_inference_steps=4, channel_order=order,
+        )
+        model.eval()
+        with torch.no_grad():
+            pred = model(torch.randn(2, len(order), 1600).clamp(-15, 15))
+        assert pred.shape == (2, 8)

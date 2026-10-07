@@ -172,18 +172,27 @@ python scripts/predict.py \
 
 ## Uncertainty Quantification
 
-Native ensemble + scalar recalibration + split conformal on a held-out fold:
+Native ensemble (`M = 50` sampled trajectories) with a validation-fitted
+scalar recalibration:
 
 ```bash
-python scripts/run_uncertainty.py \
-    --config configs/neurobolt.yaml \
-    --checkpoint outputs/boldflow_neurobolt/fold_1/best.pt \
-    --fold 1 \
-    --output uq_fold_1.json
+# cache trajectories for the validation and test splits of a fold
+for split in val test; do
+  python scripts/analysis/sample_trajectories.py \
+      --config configs/neurobolt.yaml \
+      --checkpoint outputs/boldflow_neurobolt/fold_1/best.pt \
+      --fold 1 --split $split --n-samples 50 \
+      --output-dir outputs/trajectories_$split
+done
+
+python scripts/analysis/uq_calibration.py \
+    --val-dir outputs/trajectories_val --test-dir outputs/trajectories_test \
+    --output uq.json
 ```
 
-Reports Coverage@95, AUSE, Spearman residual / std, and Expected Calibration
-Error after recalibration.
+Reports the Spearman correlation between uncertainty and absolute residual,
+calibration error, and coverage at the nominal 95% level, before and after
+recalibration.
 
 ## Repository Layout
 
@@ -197,20 +206,21 @@ boldflow/
     data.py                    NeuroBOLT + OpenNeuroSleep loaders
     splits.py                  subject-level K-fold CV
     difumo.py                  DiFuMo labels, non-neural and cortical-network masks
-    metrics.py                 MSE, MAE, R2, T.Corr, Spearman, FC Corr (masked, per scan)
+    metrics.py                 MSE, T.Corr, FC Corr (masked, per scan)
     schedulers.py              cosine warmup + layer-wise LR decay
     training.py                per-fold loop + K-fold runner + evaluate
-    uncertainty.py             native ensemble + ScalarRecalibration + SplitConformal + AUSE/ECE
+    analysis.py                trajectory sampling/caching, FC and resampling helpers
+    uncertainty.py             native ensemble, scalar recalibration, calibration error
     utils.py                   logging, seeding, IO, env-var path resolution
-  configs/{neurobolt,sleep}.yaml
+  configs/                     headline configs, controls and ablations
   scripts/
     train.py                   K-fold (and multi-seed) training entry point
     evaluate.py                evaluate a checkpoint on a fold's test split
     predict.py                 single-window inference + ensemble UQ from .npy
-    run_uncertainty.py         post-hoc UQ pipeline + conformal calibration
     download_pretrained.py     download REVE-base weights from HuggingFace
-    make_figures.py            ablation/scaling bar plots from results.json
     make_qualitative.py        time-course + FC-matrix plots from saved predictions
+    analysis/                  appendix analyses on cached sampled trajectories
+                               (see docs/reproducing.md, section 7)
   tests/                       pytest smoke tests
   checkpoints/                 placeholder, see checkpoints/README.md
   docs/                        architecture.md, reproducing.md
@@ -230,7 +240,8 @@ pytest tests/
 
 Covers model instantiation, forward/backward shapes, metric correctness
 against numpy references, UQ recalibration recovering known scaling factors,
-and conformal coverage hitting the nominal level. Runs in seconds on CPU.
+and the analysis scripts on synthetic trajectories. Runs in under a minute on
+CPU.
 
 ## License
 

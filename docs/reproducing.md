@@ -35,6 +35,7 @@ Pulls `model.safetensors` from `brain-bzh/reve-base` into
 ```bash
 # Headline: 5-fold CV, 30 epochs/fold, 3 seeds = 15 runs
 python scripts/train.py --config configs/neurobolt.yaml --seeds 12345 22345 32345
+# Subject partitions come from the config seed and are shared across --seeds.
 
 # OpenNeuroSleep
 python scripts/train.py --config configs/sleep.yaml --seeds 12345 22345 32345
@@ -48,7 +49,7 @@ outputs/boldflow_neurobolt/
   seed_12345/   results.json + fold_<i>/best.pt   (only if --seeds is given)
   seed_22345/   ...
   seed_32345/   ...
-  results.json  aggregated mean/std across seeds
+  results.json  mean/std over all fold x seed runs
 ```
 
 ## 3. Evaluate
@@ -78,13 +79,17 @@ Because the readout is stochastic, single-run values vary with the seed.
 ## 4. Uncertainty quantification
 
 ```bash
-python scripts/run_uncertainty.py \
-    --config configs/neurobolt.yaml \
-    --checkpoint outputs/.../fold_1/best.pt \
-    --fold 1 --output uq_fold_1.json
+for split in val test; do
+  python scripts/analysis/sample_trajectories.py \
+      --config configs/neurobolt.yaml --checkpoint outputs/.../fold_1/best.pt \
+      --fold 1 --split $split --n-samples 50 \
+      --output-dir outputs/trajectories_$split
+done
+python scripts/analysis/uq_calibration.py \
+    --val-dir outputs/trajectories_val --test-dir outputs/trajectories_test
 ```
 
-50-member native ensemble with a validation-fitted scalar recalibration.
+50-trajectory native ensemble with a validation-fitted scalar recalibration.
 Paper values for the recalibrated native ensemble (Table 2, NeuroBOLT):
 
 ```
@@ -93,22 +98,7 @@ Calibration Error     = 0.011
 Coverage@95           = 0.948
 ```
 
-The script additionally reports AUSE and split-conformal coverage, which are
-not part of the paper tables.
-
 ## 5. Figures
-
-After training, reproduce the bar-plot figures (ablation, parcellation,
-context length) from a list of `results.json`:
-
-```bash
-python scripts/make_figures.py --metric pearson_r \
-    --results outputs/run16s/results.json \
-              outputs/run24s/results.json \
-              outputs/run32s/results.json \
-    --labels 16s 24s 32s \
-    --output figures/context_length.pdf
-```
 
 After `evaluate.py --save-predictions`, reproduce the qualitative figures
 (predicted vs. ground-truth time courses + FC matrices):
@@ -141,13 +131,61 @@ operating-point ablation are reproduced by changing config knobs:
 | Seq2seq horizon T_out      | `model.n_out_timesteps` (1 = seq2one, 4 = headline) |
 | Without spectral encoder  | (not exposed; see `boldflow/model.py`) |
 
-## 7. Per-fold reproducibility
+Retrained controls and ablations with their own config:
+
+| Experiment                              | Config                              |
+| --------------------------------------- | ----------------------------------- |
+| Constant-input generator (Appendix D)   | `configs/control_constant_eeg.yaml` |
+| Reduced montage, 19 channels (Table 7)  | `configs/montage_19.yaml`           |
+| Reduced montage, 6 channels (Table 7)   | `configs/montage_6.yaml`            |
+| Fixed-sigma source (Table 6, L4)        | `configs/ablation_point_prior.yaml` |
+
+## 7. Appendix analyses
+
+The analyses of Appendices C-G work on cached sampled trajectories. Run
+`sample_trajectories.py` once per checkpoint and fold; every other script in
+`scripts/analysis/` reads the cache and writes a JSON summary.
+
+```bash
+# M trajectories per held-out scan (one source draw per anchor, overlap-averaged)
+python scripts/analysis/sample_trajectories.py \
+    --config configs/neurobolt.yaml \
+    --checkpoint outputs/boldflow_neurobolt/seed_12345/fold_1/best.pt \
+    --fold 1 --n-samples 50 --output-dir outputs/trajectories
+# add --split val for the recalibration set, --n-samples 200 for the audit
+```
+
+| Paper item                                             | Script                              |
+| ------------------------------------------------------ | ----------------------------------- |
+| Table 14, trajectory averaging over M                  | `trajectory_averaging.py`           |
+| Appendix D, constant-input generator                   | `constant_input_fc.py`              |
+| Appendix D, pairing beyond population structure        | `subject_pairing.py`                |
+| Appendix D, within-scan temporal specificity           | `dynamic_fc_alignment.py`           |
+| Table 9, held-out trajectory audit                     | `trajectory_audit.py`               |
+| Appendix D, filtering control                          | `bandlimited_fc.py`                 |
+| Appendix C, measured-fMRI effective rank               | `effective_rank.py`                 |
+| Table 2, native ensemble and scalar recalibration      | `uq_calibration.py`                 |
+| Appendix E, edge-error selection                       | `uq_edge_selection.py`              |
+| Appendix E, regional and temporal associations         | `uq_structure.py`                   |
+| Table 10, source-spread preservation                   | `source_spread.py`                  |
+| Figure 1, strongest-edge recovery                      | `edge_recovery.py`                  |
+| Table 11, community structure                          | `community_structure.py`            |
+| Table 12, subject identification                       | `fingerprinting.py`                 |
+| Table 13, per-component accuracy and thalamus          | `per_component_report.py`           |
+| Appendix F, cross-session personalization              | `cross_session_personalization.py`  |
+| Appendix A, checkpoint audit                           | `checkpoint_audit.py`               |
+
+`source_spread.py` and `cross_session_personalization.py` run the model and
+take `--config`/`--checkpoint` directly. `community_structure.py` needs
+`networkx` (`pip install -e ".[analysis]"`).
+
+## 8. Per-fold reproducibility
 
 Default seed is 12345. Determinism is not perfect because some flow-matching
 kernels lack deterministic implementations on GPU; fold-to-fold scatter from
 re-runs is well below the reported per-seed standard deviation.
 
-## 8. Sanity check (no GPU, no real data)
+## 9. Sanity check (no GPU, no real data)
 
 ```bash
 pytest tests/                          # ~70 s on CPU

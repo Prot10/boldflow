@@ -26,6 +26,8 @@ from typing import Any, Dict, List
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from boldflow.analysis import model_kwargs as build_model_kwargs
+from boldflow.analysis import scan_load_kwargs
 from boldflow.data import create_cv_dataloaders
 from boldflow.splits import SubjectLevelCVSplitter
 from boldflow.training import aggregate, run_cv
@@ -99,32 +101,20 @@ def _run_one_seed(cfg: Dict[str, Any], seed: int, output_dir: Path,
     splitter = SubjectLevelCVSplitter(
         data_root=cfg["data"]["data_root"],
         k_folds=int(cfg.get("k_folds", 5)),
-        seed=seed,
+        # Fixed subject partitions: folds are shared across training seeds.
+        seed=int(cfg.get("seed", 12345)),
         dataset=cfg["data"]["dataset"],
         n_rois=int(cfg["data"]["n_rois"]),
     )
     print(splitter.summary())
 
     loader_kwargs = dict(
-        dataset=cfg["data"]["dataset"],
-        n_rois=int(cfg["data"]["n_rois"]),
-        target_roi=cfg["data"].get("target_roi"),
-        multi_roi=bool(cfg["data"].get("multi_roi", True)),
         batch_size=int(cfg["training"]["batch_size"]),
         num_workers=int(cfg["data"].get("num_workers", 4)),
         pin_memory=bool(cfg["data"].get("pin_memory", True)),
-        apply_eeg_filter=bool(cfg["data"].get("apply_eeg_filter", True)),
-        apply_fmri_filter=bool(cfg["data"].get("apply_fmri_filter", True)),
-        normalize_eeg=bool(cfg["data"].get("normalize_eeg", True)),
-        eeg_lowpass=cfg["data"].get("eeg_lowpass"),
-        exclude_non_neural=bool(cfg["data"].get("exclude_non_neural", False)),
-        tr=float(cfg["data"].get("tr", 2.1)),
-        tmin=float(cfg["data"].get("tmin", -32.0)),
-        tmax=float(cfg["data"].get("tmax", 0.0)),
-        crop=int(cfg["model"]["input_length"]),
-        # Seq2seq horizon: must match the model's flow dimension. Sourced from
-        # the model section so model and data targets always agree.
-        n_out_timesteps=int(cfg["model"].get("n_out_timesteps", 4)),
+        # Preprocessing, context window, seq2seq horizon, montage: shared with
+        # the evaluation and analysis scripts.
+        **scan_load_kwargs(cfg),
     )
 
     def make_loaders(fold):
@@ -132,20 +122,7 @@ def _run_one_seed(cfg: Dict[str, Any], seed: int, output_dir: Path,
 
     factory = _make_model_factory(cfg, variant)
     if factory is None:
-        m = cfg["model"]
-        model_kwargs = dict(
-            n_channels=int(m["n_channels"]),
-            input_length=int(m["input_length"]),
-            n_rois=int(m["n_rois"]),
-            n_out_timesteps=int(m.get("n_out_timesteps", 4)),
-            embed_dim=int(m["embed_dim"]),
-            velocity_layers=int(m["velocity_layers"]),
-            n_inference_steps=int(m["n_inference_steps"]),
-            prior_beta=float(m["prior_beta"]),
-            prior_loss_weight=float(m["prior_loss_weight"]),
-            prior_sigma_floor=float(m["prior_sigma_floor"]),
-            prior_init_sigma=float(m["prior_init_sigma"]),
-        )
+        model_kwargs = build_model_kwargs(cfg)
     else:
         model_kwargs = None
 
@@ -171,18 +148,15 @@ def _run_one_seed(cfg: Dict[str, Any], seed: int, output_dir: Path,
 
 
 def _aggregate_seeds(seed_summaries: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Combine the per-fold-mean metrics across seeds (mean +/- std across seeds)."""
-    metric_keys = [k for k in seed_summaries[0] if k.startswith("mean_test_")]
-    out: Dict[str, Any] = {"n_seeds": len(seed_summaries),
+    """Pool every (fold, seed) run: mean and standard deviation across runs."""
+    metric_keys = list(seed_summaries[0]["fold_results"][0]["test_metrics"].keys())
+    runs = [fold for s in seed_summaries for fold in s["fold_results"]]
+    out: Dict[str, Any] = {"n_seeds": len(seed_summaries), "n_runs": len(runs),
                            "seeds": [s["seed"] for s in seed_summaries]}
     for k in metric_keys:
-        values = [s[k] for s in seed_summaries]
-        # Replace ``mean_test_`` with the seed-aggregated mean and add std across seeds.
-        bare = k.removeprefix("mean_test_")
-        out[f"mean_test_{bare}"] = float(statistics.mean(values))
-        out[f"std_test_{bare}_across_seeds"] = (
-            float(statistics.stdev(values)) if len(values) > 1 else 0.0
-        )
+        values = [r["test_metrics"][k] for r in runs]
+        out[f"mean_test_{k}"] = float(statistics.mean(values))
+        out[f"std_test_{k}"] = float(statistics.stdev(values)) if len(values) > 1 else 0.0
     out["per_seed"] = seed_summaries
     return out
 

@@ -51,6 +51,17 @@ SLEEP_CHANNEL_ORDER = (
 )
 
 
+# Reduced montages (subsets of the 26-channel layout) used for the
+# electrode-coverage ablation: the standard 19-electrode 10-20 montage and a
+# six-channel frontal/central/occipital subset.
+STANDARD_19_CHANNEL_ORDER = (
+    "FP1", "FP2", "F7", "F3", "FZ", "F4", "F8",
+    "T7", "C3", "CZ", "C4", "T8",
+    "P7", "P3", "PZ", "P4", "P8", "O1", "O2",
+)
+REDUCED_6_CHANNEL_ORDER = ("F3", "F4", "C3", "C4", "O1", "O2")
+
+
 def _get_coord(name: str) -> Tuple[float, float, float]:
     """Case-insensitive lookup in ``EEG_CHANNEL_COORDS``."""
     upper = name.upper()

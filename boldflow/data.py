@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -75,6 +75,8 @@ def load_scan(
     eeg_lowpass: Optional[float] = None,
     exclude_non_neural: bool = False,
     n_out_timesteps: int = 1,
+    channels: Optional[Sequence[str]] = None,
+    zero_eeg: bool = False,
 ) -> Tuple[List[np.ndarray], List[np.ndarray], Dict[str, Any]]:
     """Load and preprocess one paired EEG/fMRI scan.
 
@@ -86,6 +88,11 @@ def load_scan(
     of shape ``(R,)``. With ``n_out_timesteps=T>1`` (seq2seq) the target is
     the block of ``T`` consecutive volumes ending at the anchor TR, shape
     ``(T, R)``; anchors lacking ``T-1`` prior TRs are dropped.
+
+    ``channels`` keeps only the named EEG channels, in the given order
+    (reduced-montage models; pass the same tuple as the model's
+    ``channel_order``). ``zero_eeg`` replaces the EEG by zeros after windowing
+    (constant-input control).
     """
     spec = DATASETS[dataset]
     data_root = Path(data_root)
@@ -109,6 +116,13 @@ def load_scan(
     drop = [ch for ch in spec.exclude_channels if ch in raw.ch_names]
     if drop:
         raw.drop_channels(drop)
+    if channels is not None:
+        by_upper = {ch.upper(): ch for ch in raw.ch_names}
+        missing = [ch for ch in channels if ch.upper() not in by_upper]
+        if missing:
+            raise ValueError(f"channels {missing} not found in {scan_name}")
+        raw.pick([by_upper[ch.upper()] for ch in channels])
+        raw.reorder_channels([by_upper[ch.upper()] for ch in channels])
 
     if apply_eeg_filter:
         raw.filter(l_freq=0.5, h_freq=None, verbose=False)
@@ -184,6 +198,9 @@ def load_scan(
         # samples, and most scans never reach +/-15 at all.
         if clip_eeg is not None:
             eeg_data = np.clip(eeg_data, -clip_eeg, clip_eeg)
+
+    if zero_eeg:
+        eeg_data = np.zeros_like(eeg_data)
 
     # Pair each EEG window with its fMRI target. ``epochs.selection`` gives the
     # fMRI-trigger index of every retained EEG epoch, in scan order.

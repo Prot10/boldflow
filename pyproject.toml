@@ -35,13 +35,16 @@ pretrained = [
 figures = [
     "matplotlib>=3.7.0",
 ]
+analysis = [
+    "networkx>=3.0",
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
     "ruff>=0.1.0",
 ]
 all = [
-    "boldflow[data,pretrained,figures,dev]",
+    "boldflow[data,pretrained,figures,analysis,dev]",
 ]
 
 [project.urls]
