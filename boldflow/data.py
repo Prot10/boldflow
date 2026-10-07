@@ -168,7 +168,8 @@ def load_scan(
         b, a = butter(N=5, Wn=0.15 / nyquist, btype="low")
         fmri_np = filtfilt(b, a, fmri_np, axis=1)
 
-    # Per-ROI absmax normalisation (paper convention).
+    # Demean each component within the scan and divide by the 95th percentile
+    # of its absolute centred values.
     fmri_np = fmri_np - fmri_np.mean(axis=-1, keepdims=True)
     scale = np.quantile(np.abs(fmri_np), q=0.95, axis=-1, keepdims=True) + 1e-8
     fmri_np = fmri_np / scale
@@ -192,10 +193,7 @@ def load_scan(
         ch_mean = eeg_data.mean(axis=(0, 2), keepdims=True)
         ch_std = eeg_data.std(axis=(0, 2), keepdims=True) + 1e-8
         eeg_data = (eeg_data - ch_mean) / ch_std
-        # Clip to +/- clip_eeg standard deviations, matching the distribution
-        # seen during REVE pretraining (paper App. C). This only caps rare
-        # residual gradient/BCG artefacts: on NeuroBOLT it touches <0.02% of
-        # samples, and most scans never reach +/-15 at all.
+        # Clip to +/- clip_eeg standard deviations.
         if clip_eeg is not None:
             eeg_data = np.clip(eeg_data, -clip_eeg, clip_eeg)
 

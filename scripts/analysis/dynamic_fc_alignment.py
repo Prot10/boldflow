@@ -42,7 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import numpy as np
 
 from boldflow.analysis import (ScanTrajectories, fc_components, fc_matrix, fc_similarity,
-                               fisher_mean, fisher_z, load_scans, nanmean,
+                               fisher_z, load_scans, nanmean,
                                population_templates, subject_bootstrap)
 from boldflow.utils import save_json
 

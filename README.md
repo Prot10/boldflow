@@ -120,7 +120,7 @@ model = BoldFlow.from_pretrained("checkpoints/boldflow_neurobolt_fold1.pt", devi
 ## Training
 
 ```bash
-# Full 5-fold CV reproducing the NeuroBOLT row of Table 1
+# Full 5-fold CV, NeuroBOLT row of Table 1
 python scripts/train.py --config configs/neurobolt.yaml
 
 # Single fold, 2 epochs (sanity check)

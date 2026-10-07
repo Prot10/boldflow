@@ -3,7 +3,7 @@
 
 Examples
 --------
-    # Reproduce the NeuroBOLT row of Table 1 (5-fold, 30 epochs/fold)
+    # NeuroBOLT row of Table 1 (5-fold, 30 epochs/fold)
     python scripts/train.py --config configs/neurobolt.yaml
 
     # Single fold, 2 epochs (sanity check)

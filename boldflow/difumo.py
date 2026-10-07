@@ -53,8 +53,9 @@ _NON_NEURAL_64: Dict[int, str] = {
     21: "Superior fornix and isthmus",
 }
 
-# 256/512 lists from the paper preprocessing pipeline (WM>0.7 / CSF>0.4 / GM<0.3
-# plus label patterns). Names are documentation only; code uses the index sets.
+# 256/512 lists: components with WM > 0.7, CSF > 0.4 or GM < 0.3 in the atlas
+# metadata, plus label patterns. Names are documentation only; code uses the
+# index sets.
 _NON_NEURAL_256: Dict[int, str] = {
     2: "CSF (between superior parietal lobule and skull)",
     4: "Superior longitudinal fasciculus II middle",

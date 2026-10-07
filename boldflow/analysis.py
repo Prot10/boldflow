@@ -73,6 +73,8 @@ def model_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
     for key in ("prior_beta", "prior_loss_weight", "prior_sigma_floor", "prior_init_sigma"):
         if key in m:
             kwargs[key] = float(m[key])
+    if "use_spectral_encoder" in m:
+        kwargs["use_spectral_encoder"] = bool(m["use_spectral_encoder"])
     channels = cfg["data"].get("channels")
     if channels is not None:
         # Reduced montage: the encoder's coordinate encoding follows the data order.

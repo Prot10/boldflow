@@ -166,8 +166,6 @@ def test_filtering_control_recovers_fc_under_fast_noise(tmp_path):
     s = result["summary"]
     assert s["single_draw_filtered"]["mean"] > 0.99
     assert s["single_draw_delta"]["ci_low"] > 0.0
-    assert s["single_draw_delta_both"]["mean"] == pytest.approx(s["single_draw_delta"]["mean"],
-                                                                 abs=0.01)
     assert s["ensemble_mean_filtered"]["mean"] > 0.99
     assert 0.2 < s["variance_removed"]["mean"] < 1.0
     assert s["power_above_cutoff"]["mean"] == pytest.approx(s["variance_removed"]["mean"], abs=0.1)

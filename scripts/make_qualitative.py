@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Qualitative paper figures: predicted vs ground-truth time courses + FC matrices.
+"""Qualitative figures: predicted vs ground-truth time courses + FC matrices.
 
 Inputs
 ------
@@ -13,8 +13,8 @@ Outputs
 * ``fc_matrices.pdf``: side-by-side ground-truth and predicted functional
   connectivity matrices, plus their difference.
 
-These reproduce the structure of Figs. ``qualitative_timeseries`` and
-``fc_matrix_comparison`` in the paper.
+The time-course panel follows the layout of the representative regional
+predictions (Figure 4).
 """
 from __future__ import annotations
 

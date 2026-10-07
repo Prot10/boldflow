@@ -11,8 +11,8 @@ This directory holds:
   and renames it to `reve-base.safetensors` here.
 
 * `boldflow_neurobolt_fold{1..5}.pt` and `boldflow_sleep_fold{1..5}.pt` --
-  optional trained BoldFlow checkpoints that reproduce the paper headline
-  numbers in Table 1. These are not bundled with the source release; if you
+  optional trained BoldFlow checkpoints for the Table 1 configurations.
+  These are not bundled with the source release; if you
   trained your own checkpoints with `scripts/train.py`, the per-fold `best.pt`
   files live under `outputs/<run_name>/fold_<i>/best.pt` and you can copy
   them here to run `scripts/evaluate.py` and the scripts in `scripts/analysis/`.

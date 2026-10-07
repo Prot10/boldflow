@@ -1,16 +1,11 @@
-# BOLDFlow on NeuroBOLT (paper Table 1 headline configuration).
-# Paper values (5-fold subject-disjoint CV, 3 seeds, sampled trajectory M=1):
-#   MSE = 0.239,  T.Corr = 0.326 +/- 0.008,  FC Corr = 0.584 +/- 0.017
-#
-# data.data_root resolution order (any of these works):
-#   1. --data-root <path> on the command line
-#   2. BOLDFLOW_DATA_ROOT environment variable
-#   3. data.data_root in this file (the placeholder below)
+# Spectral-branch ablation (Appendix C): the headline configuration without the
+# multi-scale spectral encoder (B2).
+# Identical to configs/neurobolt.yaml except model.use_spectral_encoder.
 
-name: boldflow_neurobolt
+name: boldflow_ablation_no_spectral
 seed: 12345
 device: cuda
-output_dir: ./outputs/boldflow_neurobolt
+output_dir: ./outputs/boldflow_ablation_no_spectral
 
 k_folds: 5
 folds: [1, 2, 3, 4, 5]
@@ -24,6 +19,7 @@ model:
   input_length: 6400          # 32 s at 200 Hz
   n_rois: 64                  # DiFuMo parcels per TR
   n_out_timesteps: 4          # seq2seq horizon T_out (paper headline)
+  use_spectral_encoder: false # REVE stream only
   embed_dim: 512
   velocity_layers: 4
   n_inference_steps: 50       # Euler steps at test time

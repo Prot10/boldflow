@@ -201,7 +201,7 @@ def train_fold(
     warmup_steps = len(train_loader) * warmup_epochs
     scheduler = CosineAnnealingWarmup(optimizer, total_steps, warmup_steps)
 
-    # AMP only on CUDA; torch.amp.GradScaler replaces the deprecated cuda.amp one.
+    # AMP only on CUDA.
     device_type = torch.device(device).type
     use_amp = mixed_precision and device_type == "cuda" and torch.cuda.is_available()
     scaler = torch.amp.GradScaler(device_type) if use_amp else None

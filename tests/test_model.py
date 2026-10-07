@@ -258,3 +258,18 @@ def test_reduced_montage_model():
         with torch.no_grad():
             pred = model(torch.randn(2, len(order), 1600).clamp(-15, 15))
         assert pred.shape == (2, 8)
+
+
+def test_spectral_branch_ablation():
+    """use_spectral_encoder=False drops the spectral stream and still runs."""
+    model = BoldFlow(n_channels=26, input_length=1600, n_rois=8, n_out_timesteps=1,
+                     embed_dim=64, velocity_layers=2, n_inference_steps=4,
+                     use_spectral_encoder=False)
+    assert model.spectral_encoder is None
+    eeg = torch.randn(2, 26, 1600).clamp(-15, 15)
+    model.train()
+    loss = model(eeg, fmri_target=torch.randn(2, 8))
+    assert torch.isfinite(loss)
+    model.eval()
+    with torch.no_grad():
+        assert model(eeg).shape == (2, 8)

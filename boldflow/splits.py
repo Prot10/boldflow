@@ -53,7 +53,9 @@ class SubjectLevelCVSplitter:
     data_root
         Root with ``EEG/`` and ``fMRI_difumo_{n_rois}/`` subdirectories.
     k_folds, seed, val_ratio
-        Self-explanatory; paper uses 5 folds, seed=12345, val_ratio=0.2.
+        Number of folds, permutation seed, and fraction of the non-test
+        subjects held out for validation (5 folds and ``val_ratio=0.2`` give
+        three validation subjects per fold on NeuroBOLT).
     dataset
         ``"neurobolt"`` or ``"sleep"``; selects the EEG filename regex.
     task_filter

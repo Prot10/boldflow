@@ -40,5 +40,5 @@ data/
 notebooks/.ipynb_checkpoints/
 *.log
 
-# Anonymous review staging (the upload artefact for anonymous.4open.science)
+# Archives
 *.zip

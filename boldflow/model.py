@@ -130,6 +130,7 @@ class BoldFlow(nn.Module):
         prior_sigma_floor: float = 0.05,
         prior_init_sigma: float = 0.2,
         channel_order: Optional[tuple[str, ...]] = None,
+        use_spectral_encoder: bool = True,
     ):
         super().__init__()
         self.n_channels = n_channels
@@ -170,15 +171,18 @@ class BoldFlow(nn.Module):
             n_fourier_freqs=int(d["n_fourier_freqs"]),
             channel_order=channel_order,
         )
-        self.spectral_encoder = MSSEncoder(
-            embed_dim=embed_dim,
-            input_length=input_length,
-            n_channels=n_channels,
-            scales=d["spectral_scales"],
-            depth=int(d["spectral_depth"]),
-            heads=int(d["spectral_heads"]),
-            dropout=float(d["spectral_dropout"]),
-        )
+        # ``use_spectral_encoder=False`` removes the spectral stream (B2 ablation).
+        self.spectral_encoder: Optional[MSSEncoder] = None
+        if use_spectral_encoder:
+            self.spectral_encoder = MSSEncoder(
+                embed_dim=embed_dim,
+                input_length=input_length,
+                n_channels=n_channels,
+                scales=d["spectral_scales"],
+                depth=int(d["spectral_depth"]),
+                heads=int(d["spectral_heads"]),
+                dropout=float(d["spectral_dropout"]),
+            )
         self.head_activation = nn.GELU()
 
         self.velocity_net = AdaLNVelocityNet(
@@ -201,9 +205,10 @@ class BoldFlow(nn.Module):
 
     def encode_eeg(self, eeg: torch.Tensor) -> torch.Tensor:
         """Run both encoder branches; return the fused EEG embedding ``z_eeg``."""
-        temporal = self.encoder(eeg)
-        spectral = self.spectral_encoder(eeg)
-        return self.head_activation(temporal + spectral)
+        fused = self.encoder(eeg)
+        if self.spectral_encoder is not None:
+            fused = fused + self.spectral_encoder(eeg)
+        return self.head_activation(fused)
 
     def forward(
         self,

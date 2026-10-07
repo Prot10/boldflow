@@ -13,8 +13,7 @@ two readouts:
 It reports the filtered-minus-unfiltered change per readout (scan values
 averaged within subject, percentile bootstrap over subjects) and how much
 generated power the filter removes: the Welch power fraction above the cutoff
-and the realised drop in temporal variance. As a secondary contrast the same
-filter is also applied to the measured series (``both`` columns).
+and the realised drop in temporal variance.
 ``--bandpass LOW HIGH`` swaps the low-pass for a band-pass, which additionally
 removes slow content.
 
@@ -81,17 +80,14 @@ def scan_filtering_control(scan: ScanTrajectories, *, high: float = CUTOFF_HZ,
     target = np.asarray(scan.target, dtype=np.float64)
     comps = fc_components(target.shape[1])
     filtered = zero_phase_filter(samples, scan.tr, high=high, low=low)
-    fc_raw = fc_matrix(target, comps)
-    fc_filt = fc_matrix(zero_phase_filter(target, scan.tr, high=high, low=low), comps)
+    fc_target = fc_matrix(target, comps)
 
     row: Dict[str, float] = {}
-    for name, gen, fc_target in (("raw", samples, fc_raw), ("filtered", filtered, fc_raw),
-                                 ("both", filtered, fc_filt)):
+    for name, gen in (("raw", samples), ("filtered", filtered)):
         row[f"single_draw_{name}"] = _single_draw_fc(gen, fc_target, comps)
         row[f"ensemble_mean_{name}"] = fc_similarity(fc_matrix(gen.mean(axis=0), comps), fc_target)
     for readout in READOUTS:
         row[f"{readout}_delta"] = row[f"{readout}_filtered"] - row[f"{readout}_raw"]
-        row[f"{readout}_delta_both"] = row[f"{readout}_both"] - row[f"{readout}_raw"]
     row["power_above_cutoff"] = power_fraction_above(samples, scan.tr, high)
     row["power_above_cutoff_measured"] = power_fraction_above(target, scan.tr, high)
     row["variance_removed"] = float(1.0 - filtered.var(axis=1).sum() / samples.var(axis=1).sum())
@@ -142,11 +138,10 @@ def main() -> None:
     band = f"low-pass {high} Hz" if low is None else f"band-pass {low}-{high} Hz"
     print(f"{band}; {result['n_scans']} scans, {s['single_draw_raw']['n_subjects']} subjects; "
           "subject-bootstrap 95% intervals")
-    print(f"{'Readout':<16}{'unfiltered':>12}{'filtered':>12}"
-          f"{'change (generated filtered)':>34}{'change (both filtered)':>34}")
+    print(f"{'Readout':<16}{'unfiltered':>12}{'filtered':>12}{'change':>34}")
     for r in READOUTS:
         print(f"{r:<16}{s[r + '_raw']['mean']:>12.3f}{s[r + '_filtered']['mean']:>12.3f}"
-              f"{_cell(s[r + '_delta'], True):>34}{_cell(s[r + '_delta_both'], True):>34}")
+              f"{_cell(s[r + '_delta'], True):>34}")
     print(f"generated power above {high} Hz: {100 * s['power_above_cutoff']['mean']:.1f}% "
           f"(measured {100 * s['power_above_cutoff_measured']['mean']:.1f}%); "
           f"generated variance removed by the filter: {100 * s['variance_removed']['mean']:.1f}%")

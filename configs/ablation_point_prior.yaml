@@ -42,7 +42,7 @@ training:
 
 data:
   dataset: neurobolt
-  data_root: /path/to/neurobolt   # CHANGE ME (or set BOLDFLOW_DATA_ROOT)
+  data_root: /path/to/neurobolt   # or set BOLDFLOW_DATA_ROOT / --data-root
   n_rois: 64
   multi_roi: true
   tr: 2.1

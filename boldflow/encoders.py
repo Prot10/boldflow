@@ -331,8 +331,7 @@ class MSSEncoder(nn.Module):
             ch_data = x[:, ch, :]
             scale_embs = []
             for si, scale in enumerate(self.scales):
-                # Non-overlapping rectangular STFT matches NeuroBOLT's MSS;
-                # changing it hurts r catastrophically (paper appendix).
+                # Non-overlapping rectangular STFT, as in NeuroBOLT's MSS.
                 window = torch.ones(scale, device=x.device)
                 spec = torch.stft(
                     ch_data, n_fft=scale, hop_length=scale, window=window,

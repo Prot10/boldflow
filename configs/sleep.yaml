@@ -41,7 +41,7 @@ training:
 
 data:
   dataset: sleep
-  data_root: /path/to/openneurosleep   # CHANGE ME (or set BOLDFLOW_DATA_ROOT)
+  data_root: /path/to/openneurosleep   # or set BOLDFLOW_DATA_ROOT / --data-root
   n_rois: 64
   multi_roi: true
   tr: 2.1

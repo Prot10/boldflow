@@ -8,9 +8,8 @@ components (Thalamus, Putamen, Caudate, Cerebellum Crus II, Cerebellum I-V)
 and 56 cortical components.
 
 Per scan and component the script computes the time-averaged ensemble spread
-(Bessel-corrected std over the first ``M`` trajectories), the time-averaged
-absolute error of the ensemble mean, and three properties of the measured
-BOLD: temporal SD, roughness (one minus the lag-1 autocorrelation) and the
+(Bessel-corrected std over the first ``M`` trajectories) and three properties
+of the measured BOLD: temporal SD, roughness (one minus the lag-1 autocorrelation) and the
 fraction of Welch power in 0.08-0.15 Hz. Scans are averaged within subject and
 subjects with equal weight. Reported:
 
@@ -19,8 +18,7 @@ subjects with equal weight. Reported:
 * Spearman correlation across the 61 components between spread and roughness
   and between spread and 0.08-0.15 Hz power: subject bootstrap interval,
   one-sided component-label permutation p-value, Holm correction across the
-  two, and the rank-partial correlation controlling for target SD;
-* Spearman correlation of spread with absolute error and with target SD.
+  two, and the rank-partial correlation controlling for target SD.
 
 Examples
 --------
@@ -33,7 +31,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -83,8 +81,7 @@ def target_dynamics(target: np.ndarray, tr: float) -> Dict[str, np.ndarray]:
 def scan_component_stats(item: ScanTrajectories, m: Optional[int] = None) -> Dict[str, np.ndarray]:
     """Per-component spread, absolute error and target dynamics of one scan."""
     spread = item.ensemble_std(m).astype(np.float64).mean(axis=0)
-    abs_error = np.abs(item.ensemble_mean(m).astype(np.float64) - item.target).mean(axis=0)
-    return {"spread": spread, "abs_error": abs_error, **target_dynamics(item.target, item.tr)}
+    return {"spread": spread, **target_dynamics(item.target, item.tr)}
 
 
 def subject_matrix(values: np.ndarray, subjects: Sequence[str]) -> np.ndarray:
@@ -204,8 +201,6 @@ def analyse(items: Sequence[ScanTrajectories], m: Optional[int] = None, *,
                          "non_neural_excluded": int(groups["non_neural"].size)},
         "group_contrast": group_contrast(spread, in_deep, seed=seed + 2, **kw),
         "primary": primary,
-        "spread_vs_abs_error": association(spread, cov["abs_error"], seed=seed + 3, **kw),
-        "spread_vs_target_sd": association(spread, cov["temporal_sd"], seed=seed + 4, **kw),
         "components": {"index": neural.tolist(),
                        "label": [DIFUMO_64_LABELS[i] for i in neural],
                        "deep_gray_cerebellar": in_deep.tolist(),
@@ -243,10 +238,6 @@ def main() -> None:
               f"permutation p={e['permutation_p']:.4g} (Holm {e['holm_p']:.4g}); "
               f"partial | target SD {partial['estimate']:+.3f} "
               f"[{partial['ci_low']:+.3f}, {partial['ci_high']:+.3f}]")
-    for name in ("spread_vs_abs_error", "spread_vs_target_sd"):
-        e = result[name]
-        print(f"{name:<22} rho={e['estimate']:+.3f} [{e['ci_low']:+.3f}, {e['ci_high']:+.3f}] "
-              f"permutation p={e['permutation_p']:.4g}")
     if args.output:
         save_json(result, args.output)
         print(f"-> {args.output}")

@@ -129,7 +129,6 @@ operating-point ablation are reproduced by changing config knobs:
 | Context length            | `data.tmin` (and `model.input_length`) |
 | Parcellation              | `data.n_rois` and `model.n_rois`    |
 | Seq2seq horizon T_out      | `model.n_out_timesteps` (1 = seq2one, 4 = headline) |
-| Without spectral encoder  | (not exposed; see `boldflow/model.py`) |
 
 Retrained controls and ablations with their own config:
 
@@ -139,6 +138,7 @@ Retrained controls and ablations with their own config:
 | Reduced montage, 19 channels (Table 7)  | `configs/montage_19.yaml`           |
 | Reduced montage, 6 channels (Table 7)   | `configs/montage_6.yaml`            |
 | Fixed-sigma source (Table 6, L4)        | `configs/ablation_point_prior.yaml` |
+| Without spectral encoder (Appendix C)   | `configs/ablation_no_spectral.yaml` |
 
 ## 7. Appendix analyses
 
@@ -188,14 +188,12 @@ re-runs is well below the reported per-seed standard deviation.
 ## 9. Sanity check (no GPU, no real data)
 
 ```bash
-pytest tests/                          # ~70 s on CPU
+pytest tests/                          # under a minute on CPU
 python scripts/train.py --config configs/neurobolt.yaml \
     --folds 1 --epochs 1 --device cpu \
     --data-root /path/to/your/data
 ```
 
-The 1-fold / 1-epoch run completes in ~10-30 min on CPU and writes a
-complete `outputs/.../fold_1/best.pt` plus `results.json`. The metrics will
-be far below the paper numbers because there are no positive epochs of
-training; the value is in verifying that the entire pipeline (data loader,
-model, training step, AMP off-path, eval, save) runs end to end.
+The 1-fold / 1-epoch run writes `outputs/.../fold_1/best.pt` and
+`results.json`, exercising the full pipeline (data loader, model, training
+step, evaluation, checkpointing) end to end.
