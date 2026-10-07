@@ -119,7 +119,7 @@ def test_seq2seq_training_loss_backprops(tiny_seq2seq_model):
                for p in m.parameters())
 
 
-def test_overlap_average_recovers_interior_trajectory():
+def test_overlap_average_recovers_trajectory():
     """_overlap_average must reconstruct the per-TR trajectory exactly when
     every block is a clean slice of one ground-truth trajectory."""
     import numpy as np
@@ -130,11 +130,45 @@ def test_overlap_average_recovers_interior_trajectory():
     traj = np.random.RandomState(0).randn(n_tr, r).astype(np.float32)
     n_win = n_tr - t_out + 1
     blocks = np.stack([traj[i:i + t_out] for i in range(n_win)])  # (n_win, T, R)
+    # Default: every TR, averaged over the K_t <= T_out blocks covering it.
     agg_p, agg_t = _overlap_average(blocks, blocks, t_out)
+    assert agg_p.shape == traj.shape
+    assert np.allclose(agg_p, traj, atol=1e-5)
+    assert np.allclose(agg_t, traj, atol=1e-5)
+
+    agg_p, agg_t = _overlap_average(blocks, blocks, t_out, interior_only=True)
     interior = traj[t_out - 1:n_win]          # TRs covered by all T_out windows
     assert agg_p.shape == interior.shape
     assert np.allclose(agg_p, interior, atol=1e-5)
     assert np.allclose(agg_t, interior, atol=1e-5)
+
+
+def test_inference_readouts(tiny_model):
+    """Default inference draws a source per input; sample=False is deterministic."""
+    eeg = torch.randn(2, 26, 1600).clamp(-15, 15)
+    tiny_model.eval()
+    with torch.no_grad():
+        a, b = tiny_model(eeg), tiny_model(eeg)
+        c, d = tiny_model(eeg, sample=False), tiny_model(eeg, sample=False)
+    assert not torch.allclose(a, b)
+    assert torch.allclose(c, d)
+
+
+def test_evaluate_headline_protocol(tiny_seq2seq_model):
+    """Aggregated evaluation returns one all-TR trajectory per scan."""
+    from torch.utils.data import DataLoader, TensorDataset
+
+    from boldflow.training import evaluate
+
+    m = tiny_seq2seq_model
+    sizes = [("scan_a", 5), ("scan_b", 4)]
+    n = sum(s for _, s in sizes)
+    loader = DataLoader(TensorDataset(torch.randn(n, 26, 1600).clamp(-15, 15),
+                                      torch.randn(n, 24)), batch_size=4)
+    out = evaluate(m, loader, "cpu", scan_sizes=sizes, aggregate=True)
+    assert out["scan_lengths"] == [5 + 2, 4 + 2]      # n_anchors + T_out - 1
+    assert out["predictions"].shape == (13, 8)
+    assert "fc_correlation" in out["metrics"]
 
 
 def test_sample_ensemble_has_variance(tiny_model):

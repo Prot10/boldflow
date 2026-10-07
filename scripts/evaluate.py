@@ -35,6 +35,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--data-root", type=str, default=None,
                    help=f"Override data root (env: {ENV_DATA_ROOT}).")
     p.add_argument("--device", type=str, default=None)
+    p.add_argument("--deterministic", action="store_true",
+                   help="Integrate from the source mean instead of drawing one "
+                        "source per anchor (default: sampled trajectory, M=1).")
     p.add_argument("--save-predictions", type=str, default=None,
                    help="Optional .pt file to dump predictions and targets.")
     return p.parse_args()
@@ -96,9 +99,11 @@ def main() -> None:
         n_inference_steps=int(cfg["model"]["n_inference_steps"]),
     )
 
-    # Seq2seq: report metrics on the per-scan overlap-averaged trajectory.
+    # Headline protocol: one sampled trajectory per scan (overlap-averaged for
+    # seq2seq), FC Corr within scan on the cortical component mask.
     out = evaluate(model, test_loader, device,
-                   scan_sizes=meta.get("test_scan_sizes"), aggregate=True)
+                   scan_sizes=meta.get("test_scan_sizes"), aggregate=True,
+                   sample=not args.deterministic)
     print()
     print(f"Test metrics on fold {args.fold}:")
     for k, v in out["metrics"].items():
@@ -109,6 +114,7 @@ def main() -> None:
             "predictions": out["predictions"],
             "targets": out["targets"],
             "metrics": out["metrics"],
+            "scan_lengths": out.get("scan_lengths"),
         }, args.save_predictions)
         print(f"saved predictions to {args.save_predictions}")
 

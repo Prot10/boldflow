@@ -1,7 +1,7 @@
 """Evaluation metrics: MSE, MAE, R2, Pearson r (T.Corr), Spearman, FC Corr."""
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Optional, Sequence
 
 import numpy as np
 import torch
@@ -67,15 +67,24 @@ def _upper_tri(matrix: np.ndarray) -> np.ndarray:
     return matrix[np.triu_indices(matrix.shape[0], k=1)]
 
 
-def fc_correlation(pred: torch.Tensor, target: torch.Tensor) -> float:
+def fc_correlation(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    components: Optional[Sequence[int]] = None,
+) -> float:
     """Pearson r between predicted and ground-truth FC upper triangles.
 
     The functional connectivity matrix is the ROI x ROI Pearson correlation
-    of the time courses; the metric ignores the diagonal.
+    of the time courses; the metric ignores the diagonal. ``components``
+    restricts both matrices to a fixed component set (the cortical evaluation
+    mask, see :func:`boldflow.difumo.cortical_network_indices`).
     """
     p, t = _to_numpy(pred), _to_numpy(target)
     if p.ndim == 1 or p.shape[1] < 2:
         return 0.0
+    if components is not None:
+        idx = np.asarray(components, dtype=np.int64)
+        p, t = p[:, idx], t[:, idx]
     fc_p = np.corrcoef(p, rowvar=False)
     fc_t = np.corrcoef(t, rowvar=False)
     a, b = _upper_tri(fc_p), _upper_tri(fc_t)
@@ -87,7 +96,30 @@ def fc_correlation(pred: torch.Tensor, target: torch.Tensor) -> float:
     return float(np.corrcoef(a, b)[0, 1])
 
 
-def all_metrics(pred: torch.Tensor, target: torch.Tensor) -> Dict[str, float]:
+def fc_correlation_per_scan(
+    preds: Sequence[torch.Tensor | np.ndarray],
+    targets: Sequence[torch.Tensor | np.ndarray],
+    components: Optional[Sequence[int]] = None,
+) -> float:
+    """FC Corr computed within each scan, then averaged across scans."""
+    values = [fc_correlation(p, t, components) for p, t in zip(preds, targets)]
+    return float(np.mean(values)) if values else 0.0
+
+
+def pearson_r_per_scan(
+    preds: Sequence[torch.Tensor | np.ndarray],
+    targets: Sequence[torch.Tensor | np.ndarray],
+) -> float:
+    """T.Corr computed on each scan's time courses, then averaged across scans."""
+    values = [pearson_r(p, t) for p, t in zip(preds, targets)]
+    return float(np.mean(values)) if values else 0.0
+
+
+def all_metrics(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    fc_components: Optional[Sequence[int]] = None,
+) -> Dict[str, float]:
     """Compute every metric used by :mod:`boldflow.training`."""
     return {
         "mse": mse(pred, target),
@@ -95,5 +127,5 @@ def all_metrics(pred: torch.Tensor, target: torch.Tensor) -> Dict[str, float]:
         "r2": r2_score(pred, target),
         "pearson_r": pearson_r(pred, target),
         "spearman_r": spearman_r(pred, target),
-        "fc_correlation": fc_correlation(pred, target),
+        "fc_correlation": fc_correlation(pred, target, fc_components),
     }

@@ -6,7 +6,7 @@ and ``exclude_non_neural=True`` removes them.
 """
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 # DiFuMo-64 labels in standard atlas order, after dropping the two global signal columns.
 
@@ -206,6 +206,55 @@ DIFUMO_NON_NEURAL: Dict[int, Dict[int, str]] = {
 def non_neural_indices(n_rois: int) -> set[int]:
     """Return the set of non-neural component indices for a DiFuMo resolution."""
     return set(DIFUMO_NON_NEURAL.get(n_rois, {}).keys())
+
+
+# Components without a cortical network assignment: the atlas metadata
+# (``labels_<N>_dictionary.csv``, column ``Yeo_networks7``) lists them as
+# "No network found". They cover the non-neural components above plus
+# subcortical / cerebellar ones and a few unassigned cortical components.
+# FC Corr is computed on the remaining components (55 of 64 at DiFuMo-64).
+
+_NO_NETWORK_64: frozenset[int] = frozenset({
+    1, 8, 10, 14, 20, 21, 24, 46, 63,
+})
+
+_NO_NETWORK_256: frozenset[int] = frozenset({
+    4, 6, 20, 32, 33, 35, 36, 40, 49, 52, 54, 57, 59, 68, 70, 71, 80, 84, 90, 92, 94,
+    95, 97, 100, 102, 104, 110, 113, 124, 129, 130, 132, 134, 137, 139, 142, 146, 153,
+    155, 156, 157, 160, 164, 167, 168, 171, 172, 178, 180, 186, 198, 199, 205, 208,
+    219, 223, 227, 230, 232, 246, 248, 249, 253,
+})
+
+_NO_NETWORK_512: frozenset[int] = frozenset({
+    10, 13, 15, 21, 22, 24, 27, 28, 30, 33, 35, 36, 53, 55, 56, 57, 59, 69, 70, 71, 73,
+    79, 82, 84, 88, 97, 104, 109, 110, 112, 119, 120, 124, 125, 127, 128, 129, 136,
+    140, 147, 155, 157, 163, 164, 167, 172, 197, 201, 203, 207, 208, 209, 217, 221,
+    223, 224, 232, 233, 235, 253, 256, 258, 259, 260, 269, 271, 273, 278, 284, 288,
+    297, 302, 307, 312, 315, 316, 327, 331, 334, 338, 340, 341, 343, 345, 374, 375,
+    376, 380, 382, 391, 392, 395, 403, 405, 406, 414, 420, 422, 428, 429, 433, 439,
+    441, 444, 445, 449, 451, 453, 455, 463, 467, 471, 479, 480, 481, 482, 483, 487,
+    490, 491, 495, 500, 503, 505,
+})
+
+DIFUMO_NO_NETWORK: Dict[int, frozenset[int]] = {
+    64: _NO_NETWORK_64,
+    256: _NO_NETWORK_256,
+    512: _NO_NETWORK_512,
+}
+
+
+def cortical_network_indices(n_rois: int) -> Optional[List[int]]:
+    """Indices of the components used for FC Corr at a DiFuMo resolution.
+
+    These are the components assigned to a cortical network in the atlas
+    metadata. Returns ``None`` for an unknown resolution (e.g. after
+    ``exclude_non_neural=True`` changed the component count), in which case
+    FC Corr falls back to all components.
+    """
+    excluded = DIFUMO_NO_NETWORK.get(n_rois)
+    if excluded is None:
+        return None
+    return [i for i in range(n_rois) if i not in excluded]
 
 
 def normalize_apostrophes(s: str) -> str:

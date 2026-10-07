@@ -19,7 +19,7 @@ Architecture (~96.4 M parameters at the default ``embed_dim=512``)::
        (mu, sigma)
        |
        v
-    x_0 = mu (+ sigma * eps  during training, or for ensemble UQ)
+    x_0 = mu + sigma * eps      (x_0 = mu for the deterministic readout)
        |
        v
     Euler ODE integration (n_inference_steps) -> predicted fMRI (B, D)
@@ -209,12 +209,15 @@ class BoldFlow(nn.Module):
         self,
         eeg: torch.Tensor,
         fmri_target: Optional[torch.Tensor] = None,
+        sample: bool = True,
     ) -> torch.Tensor:
         """Train (with ``fmri_target``) or run inference.
 
         Training returns the two-term loss ``L = L_CFM + lambda*L_prior``
-        (paper Eq. 4-5); inference returns the deterministic point estimate
-        ``Euler(mu)``.
+        (paper Eq. 4-5). Inference draws one source ``x_0 = mu + sigma * eps``
+        per input and integrates it: one stochastic prediction, the block a
+        sampled trajectory is built from. ``sample=False`` integrates from
+        ``x_0 = mu`` instead (the deterministic readout).
         """
         z_eeg = self.encode_eeg(eeg)
         mu, sigma = self.distributional_prior_head(z_eeg)
@@ -237,7 +240,8 @@ class BoldFlow(nn.Module):
             return flow_loss + self.prior_loss_weight * prior_loss
 
         with torch.no_grad():
-            return euler_integrate(self.velocity_net, mu, z_eeg, self.n_inference_steps)
+            x0 = mu + sigma * torch.randn_like(mu) if sample else mu
+            return euler_integrate(self.velocity_net, x0, z_eeg, self.n_inference_steps)
 
     @torch.no_grad()
     def sample_ensemble(
@@ -249,7 +253,7 @@ class BoldFlow(nn.Module):
         """Draw ``n_samples`` flow trajectories. Returns ``(n_samples, B, n_rois)``.
 
         ``inference_sigma`` is a temperature on the learned ``sigma``: 0
-        collapses to the point estimate; 1 matches training-time sampling.
+        gives the deterministic readout; 1 matches training-time sampling.
         """
         z_eeg = self.encode_eeg(eeg)
         mu, sigma = self.distributional_prior_head(z_eeg)
@@ -265,7 +269,7 @@ class BoldFlow(nn.Module):
 
     @torch.no_grad()
     def prior_sigma_stats(self, eeg: torch.Tensor) -> Dict[str, float]:
-        """Mean/min/max of learned sigma over a batch, for collapse monitoring."""
+        """Mean/min/max of the learned source sigma over a batch."""
         z_eeg = self.encode_eeg(eeg)
         _, sigma = self.distributional_prior_head(z_eeg)
         return {"mean": sigma.mean().item(), "min": sigma.min().item(), "max": sigma.max().item()}

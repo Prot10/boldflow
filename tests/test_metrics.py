@@ -49,6 +49,29 @@ def test_fc_correlation_is_high_for_consistent_predictions():
     assert fc > 0.9
 
 
+def test_fc_correlation_component_mask():
+    """Components outside the mask must not influence FC Corr."""
+    rng = np.random.RandomState(0)
+    target = rng.randn(60, 6)
+    pred = target + 0.05 * rng.randn(60, 6)
+    pred[:, 5] = rng.randn(60)                # corrupt an excluded component
+    keep = [0, 1, 2, 3, 4]
+    masked = fc_correlation(torch.tensor(pred), torch.tensor(target), keep)
+    assert masked > 0.9
+    assert masked > fc_correlation(torch.tensor(pred), torch.tensor(target))
+
+
+def test_cortical_mask_sizes():
+    from boldflow.difumo import cortical_network_indices
+
+    assert len(cortical_network_indices(64)) == 55
+    assert len(cortical_network_indices(256)) == 193
+    assert len(cortical_network_indices(512)) == 388
+    assert cortical_network_indices(61) is None
+    excluded = set(range(64)) - set(cortical_network_indices(64))
+    assert excluded == {1, 8, 10, 14, 20, 21, 24, 46, 63}
+
+
 def test_all_metrics_reports_each_key():
     pred = torch.randn(20, 4)
     target = torch.randn(20, 4)

@@ -7,7 +7,7 @@ expects ``n_channels=26`` and ``n_samples=6400`` (32 s @ 200 Hz).
 
 Examples
 --------
-    # Single deterministic prediction
+    # Single sampled prediction (one source draw)
     python scripts/predict.py \\
         --checkpoint outputs/boldflow_neurobolt/fold_1/best.pt \\
         --eeg sample_eeg.npy

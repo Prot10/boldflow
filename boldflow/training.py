@@ -16,7 +16,9 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from boldflow.metrics import all_metrics
+from boldflow.difumo import cortical_network_indices
+from boldflow.metrics import (all_metrics, fc_correlation_per_scan,
+                              pearson_r_per_scan)
 from boldflow.model import BoldFlow
 from boldflow.schedulers import CosineAnnealingWarmup, get_param_groups
 
@@ -66,14 +68,15 @@ def _train_step(
 
 def _overlap_average(
     preds: np.ndarray, tgts: np.ndarray, t_out: int,
+    *, interior_only: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Overlap-average one scan's seq2seq blocks into a per-TR trajectory.
 
     ``preds``/``tgts`` are ``(n_windows, T_out, R)`` for a single scan, with
     windows in anchor (stride-1 TR) order. Window ``i`` offset ``t`` predicts
-    within-scan TR ``i + t``; averaging the ``T_out`` estimates of each TR is
-    the bagging-style aggregation of the paper (Eq. 9). Only *interior* TRs,
-    covered by all ``T_out`` windows, are returned.
+    within-scan TR ``i + t``; each TR is the average of the ``K_t <= T_out``
+    blocks covering it (paper Eq. 8). ``interior_only=True`` keeps only the
+    TRs covered by all ``T_out`` windows.
     """
     n, _, r = preds.shape
     n_tr = n + t_out - 1
@@ -86,8 +89,9 @@ def _overlap_average(
             acc[j] += preds[i, t]
             tgt[j] = tgts[i, t]
             cnt[j] += 1
-    interior = cnt == t_out
-    return (acc[interior] / t_out).astype(np.float32), tgt[interior].astype(np.float32)
+    keep = cnt == t_out if interior_only else cnt > 0
+    avg = acc[keep] / cnt[keep, None]
+    return avg.astype(np.float32), tgt[keep].astype(np.float32)
 
 
 @torch.no_grad()
@@ -98,57 +102,68 @@ def evaluate(
     *,
     scan_sizes: Optional[List[Tuple[str, int]]] = None,
     aggregate: bool = False,
+    sample: bool = True,
 ) -> Dict[str, Any]:
     """Run ``model`` over ``loader``; return ``{predictions, targets, metrics}``.
 
-    For a seq2seq model (``model.n_out_timesteps > 1``) the raw predictions are
-    ``(N, T_out*R)`` blocks. With ``aggregate=True`` and ``scan_sizes`` (the
-    ordered ``[(scan, n_anchors), ...]`` list from :func:`create_cv_dataloaders`)
-    the blocks are overlap-averaged per scan into the per-TR trajectory and
-    metrics are computed on that (the headline protocol). Otherwise the blocks
-    are flattened ``(N, T_out, R) -> (N*T_out, R)`` for a quick per-block metric
-    (used for validation / model selection during training).
+    ``sample=True`` draws a fresh source for every anchor, so the result is
+    one sampled trajectory (``M = 1``, the readout of the main comparison);
+    ``sample=False`` uses the deterministic readout ``x_0 = mu``.
+
+    With ``aggregate=True`` and ``scan_sizes`` (the ordered
+    ``[(scan, n_anchors), ...]`` list from :func:`create_cv_dataloaders`)
+    metrics follow the headline protocol: seq2seq blocks are overlap-averaged
+    per scan into the per-TR trajectory; MSE pools all TRs and components,
+    T.Corr is computed within each scan over all components, and FC Corr
+    within each scan on the cortical component mask; both are averaged across
+    scans.
+    Otherwise seq2seq blocks are flattened ``(N, T_out, R) -> (N*T_out, R)``
+    for a quick per-block metric (validation / model selection in training).
     """
     model.eval()
+    # Variants without a learned source scale only have a deterministic readout.
+    has_learned_source = hasattr(model, "distributional_prior_head")
     preds, targets = [], []
     for eeg, fmri in loader:
         eeg = eeg.to(device, non_blocking=True)
-        pred = model(eeg)
+        pred = model(eeg, sample=sample) if has_learned_source else model(eeg)
         preds.append(pred.cpu())
         targets.append(fmri.cpu())
     preds_t = torch.cat(preds, dim=0)
     targets_t = torch.cat(targets, dim=0)
 
     t_out = int(getattr(model, "n_out_timesteps", 1))
-    if t_out <= 1:
-        metrics = all_metrics(preds_t, targets_t)
-        return {"predictions": preds_t, "targets": targets_t, "metrics": metrics}
-
-    r = preds_t.shape[1] // t_out
+    r = preds_t.shape[1] // t_out if preds_t.ndim == 2 else 1
     p3 = preds_t.numpy().reshape(-1, t_out, r)
     t3 = targets_t.numpy().reshape(-1, t_out, r)
 
     if not aggregate or not scan_sizes:
-        # Quick per-block metric: every (T_out, R) block flattened onto the
-        # sample axis. Used for validation / checkpoint selection.
-        pm = torch.from_numpy(p3.reshape(-1, r))
-        tm = torch.from_numpy(t3.reshape(-1, r))
-        return {"predictions": preds_t, "targets": targets_t,
-                "metrics": all_metrics(pm, tm)}
+        if t_out <= 1:
+            metrics = all_metrics(preds_t, targets_t)
+        else:
+            # Quick per-block metric: every (T_out, R) block flattened onto
+            # the sample axis.
+            metrics = all_metrics(torch.from_numpy(p3.reshape(-1, r)),
+                                  torch.from_numpy(t3.reshape(-1, r)))
+        return {"predictions": preds_t, "targets": targets_t, "metrics": metrics}
 
-    # Headline protocol: overlap-average per scan into the per-TR trajectory.
-    agg_p, agg_t, off = [], [], 0
+    # Headline protocol: one per-TR trajectory per scan.
+    scan_p, scan_t, off = [], [], 0
     for _, n_win in scan_sizes:
-        if n_win >= t_out:
-            ap, at = _overlap_average(p3[off:off + n_win], t3[off:off + n_win], t_out)
-            if len(ap):
-                agg_p.append(ap)
-                agg_t.append(at)
+        if n_win > 0:
+            sp, st = _overlap_average(p3[off:off + n_win], t3[off:off + n_win], t_out)
+            scan_p.append(sp)
+            scan_t.append(st)
         off += n_win
-    pred_traj = torch.from_numpy(np.concatenate(agg_p, axis=0))
-    true_traj = torch.from_numpy(np.concatenate(agg_t, axis=0))
-    return {"predictions": pred_traj, "targets": true_traj,
-            "metrics": all_metrics(pred_traj, true_traj)}
+    pred_traj = torch.from_numpy(np.concatenate(scan_p, axis=0))
+    true_traj = torch.from_numpy(np.concatenate(scan_t, axis=0))
+    metrics = all_metrics(pred_traj, true_traj)
+    metrics["pearson_r"] = pearson_r_per_scan(scan_p, scan_t)
+    metrics["fc_correlation"] = fc_correlation_per_scan(
+        scan_p, scan_t, cortical_network_indices(r),
+    )
+    return {"predictions": pred_traj, "targets": true_traj, "metrics": metrics,
+            "scan_lengths": [len(sp) for sp in scan_p]}
 
 
 def train_fold(
@@ -174,9 +189,10 @@ def train_fold(
 
     Saves ``best.pt`` under ``output_dir/fold_<idx>/`` whenever validation
     Pearson r improves; returns a :class:`FoldResult` with test metrics from
-    the best checkpoint. For a seq2seq model the final test metrics use the
-    per-scan overlap-averaged trajectory (``test_scan_sizes`` from the loader
-    metadata); validation uses the quick per-block metric.
+    the best checkpoint. Test metrics follow the headline protocol of
+    :func:`evaluate` (sampled trajectory, ``test_scan_sizes`` from the loader
+    metadata); validation uses the quick per-block metric on the
+    deterministic readout.
     """
     model = model.to(device)
     param_groups = get_param_groups(model, lr, weight_decay, layer_decay)
@@ -222,7 +238,7 @@ def train_fold(
             n_batches += 1
         train_loss = epoch_loss / max(1, n_batches)
 
-        val = evaluate(model, val_loader, device)
+        val = evaluate(model, val_loader, device, sample=False)
         val_pearson = val["metrics"]["pearson_r"]
 
         result.history.append({
