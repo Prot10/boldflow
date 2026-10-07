@@ -30,6 +30,34 @@ def test_sample_scan_trajectories_shapes_and_diversity():
     assert det.shape[0] == 1
 
 
+def test_sampling_requires_learned_source():
+    """A model without a learned source scale only has the deterministic readout."""
+    import pytest
+
+    class NoSource(torch.nn.Module):
+        n_out_timesteps = 2
+
+        def forward(self, eeg):
+            return torch.ones(eeg.shape[0], 2 * 3)
+
+    eeg, blocks = torch.zeros(5, 2, 8), np.zeros((5, 2, 3), np.float32)
+    with pytest.raises(ValueError):
+        sample_scan_trajectories(NoSource(), eeg, blocks, n_samples=2, device="cpu")
+    det, _ = sample_scan_trajectories(NoSource(), eeg, blocks, n_samples=2, device="cpu",
+                                      deterministic=True, batch_size=2)
+    assert det.shape == (1, 6, 3) and np.allclose(det, 1.0)
+
+
+def test_aggregate_uses_sample_std():
+    from boldflow.training import FoldResult, aggregate
+
+    folds = [FoldResult(fold_idx=i, test_metrics={"mse": v}) for i, v in enumerate((1.0, 3.0))]
+    out = aggregate(folds)
+    assert out["mean_test_mse"] == 2.0
+    assert abs(out["std_test_mse"] - np.std([1.0, 3.0], ddof=1)) < 1e-12
+    assert aggregate(folds[:1])["std_test_mse"] == 0.0
+
+
 def test_cache_roundtrip(tmp_path):
     item = ScanTrajectories(scan="sub01-scan01", subject="sub01", fold=2,
                             target=np.zeros((5, 3), np.float32),

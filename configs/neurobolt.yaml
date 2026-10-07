@@ -1,6 +1,4 @@
-# BOLDFlow on NeuroBOLT (paper Table 1 headline configuration).
-# Paper values (5-fold subject-disjoint CV, 3 seeds, sampled trajectory M=1):
-#   MSE = 0.239,  T.Corr = 0.326 +/- 0.008,  FC Corr = 0.584 +/- 0.017
+# BOLDFlow on NeuroBOLT (Table 1, main-comparison configuration).
 #
 # data.data_root resolution order (any of these works):
 #   1. --data-root <path> on the command line
@@ -23,7 +21,7 @@ model:
   n_channels: 26
   input_length: 6400          # 32 s at 200 Hz
   n_rois: 64                  # DiFuMo parcels per TR
-  n_out_timesteps: 4          # seq2seq horizon T_out (paper headline)
+  n_out_timesteps: 4          # seq2seq horizon T_out
   embed_dim: 512
   velocity_layers: 4
   n_inference_steps: 50       # Euler steps at test time
@@ -34,11 +32,10 @@ model:
 
 training:
   epochs: 30
-  batch_size: 32              # safe on a 40 GB A100
+  batch_size: 32
   lr: 1.0e-4
   weight_decay: 0.01
   warmup_epochs: 3
-  layer_decay: 1.0            # paper uses no layer-wise LR decay
   max_grad_norm: 2.0
   mixed_precision: true
   early_stopping_patience: 10
@@ -47,13 +44,11 @@ data:
   dataset: neurobolt
   data_root: /path/to/neurobolt   # or set BOLDFLOW_DATA_ROOT / --data-root
   n_rois: 64
-  multi_roi: true
   tr: 2.1
   tmin: -32.0
   tmax: 0.0
   apply_eeg_filter: true
   apply_fmri_filter: true
   normalize_eeg: true
-  exclude_non_neural: false
   num_workers: 4
   pin_memory: true

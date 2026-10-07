@@ -48,9 +48,24 @@ def test_ensemble_mean_shrinks_error_variance_by_m(tmp_path):
     for run, fold in (("seed0", 1), ("seed0", 2), ("seed1", 1)):
         signal = _smooth(rng, length) @ rng.normal(size=(4, r))
         samples = signal + sigma * rng.normal(size=(m, length, r))
-        save_scan(tmp_path / run / f"fold_{fold}", _scan("sub01-scan01", samples, signal, fold))
+        save_scan(tmp_path / run / f"fold_{fold}",
+                  _scan(f"sub{fold:02d}-scan01", samples, signal, fold))
     runs = averaging.group_runs([tmp_path / "seed0", tmp_path / "seed1"])
-    assert sorted(runs) == ["seed0/fold_1", "seed0/fold_2", "seed1/fold_1"]
+    assert sorted(runs) == ["run_1/fold_1", "run_1/fold_2", "run_2/fold_1"]
+    # directories sharing a basename are separate runs; a repeated directory is rejected
+    for run in ("a", "b"):
+        save_scan(tmp_path / run / "trajectories" / "fold_1",
+                  _scan("sub01-scan01", np.zeros((1, 10, r)), np.zeros((10, r))))
+    assert len(averaging.group_runs([tmp_path / "a" / "trajectories",
+                                     tmp_path / "b" / "trajectories"])) == 2
+    with pytest.raises(ValueError):
+        averaging.group_runs([tmp_path / "seed0", tmp_path / "seed0"])
+    save_scan(tmp_path / "a" / "trajectories" / "copy" / "fold_1",
+              _scan("sub01-scan01", np.zeros((1, 10, r)), np.zeros((10, r))))
+    with pytest.raises(ValueError):
+        load_scans(tmp_path / "a")
+    with pytest.raises(ValueError):          # one call, one run: no repeated scan name
+        load_scans([tmp_path / "seed0", tmp_path / "seed1"])
     result = averaging.sweep(runs, averaging.M_GRID)
     assert result["m_grid"] == [1, 5, 10, 25, 50]          # 200 exceeds the cache
     for m_used in result["m_grid"]:
@@ -59,6 +74,11 @@ def test_ensemble_mean_shrinks_error_variance_by_m(tmp_path):
     s = result["summary"]
     assert s["50"]["t_corr"]["mean"] > s["1"]["t_corr"]["mean"]
     assert s["50"]["fc_corr"]["mean"] > 0.99
+    # sample standard deviation across runs; 0.0 for a single run
+    one = averaging.sweep({"run": runs[sorted(runs)[0]]}, [1])
+    assert one["summary"]["1"]["mse"]["std"] == 0.0
+    spread = [r["mse"] for r in result["per_run"] if r["m"] == 1]
+    assert result["summary"]["1"]["mse"]["std"] == pytest.approx(np.std(spread, ddof=1))
 
 
 # --- trajectory audit -------------------------------------------------------
@@ -71,6 +91,11 @@ def test_audit_white_noise_reference_values():
     d = audit.scan_diagnostics(samples, target, tr=TR)
     assert d["terminal_rms"] == pytest.approx(1.0, rel=0.03)
     assert d["pairwise_rms_over_target_sd"] == pytest.approx(np.sqrt(2.0), rel=0.05)
+    pair = audit.scan_diagnostics(samples[:2], target, tr=TR)   # two samples: their RMS difference
+    assert pair["pairwise_rms_over_target_sd"] == pytest.approx(
+        np.sqrt(((samples[0] - samples[1]) ** 2).mean()) / target.std(ddof=1))
+    cov = audit.conditional_covariance(samples)
+    assert np.trace(cov) / r == pytest.approx(samples.var(axis=0, ddof=1).mean())
     assert d["conditional_rank"] == pytest.approx(r, rel=0.02)
     assert d["conditional_rank_fraction"] == pytest.approx(1.0, rel=0.02)
     assert d["temporal_variance_ratio"] == pytest.approx(1.0, rel=0.15)
@@ -167,10 +192,26 @@ def test_filtering_control_recovers_fc_under_fast_noise(tmp_path):
     assert s["single_draw_filtered"]["mean"] > 0.99
     assert s["single_draw_delta"]["ci_low"] > 0.0
     assert s["ensemble_mean_filtered"]["mean"] > 0.99
-    assert 0.2 < s["variance_removed"]["mean"] < 1.0
-    assert s["power_above_cutoff"]["mean"] == pytest.approx(s["variance_removed"]["mean"], abs=0.1)
+    assert 0.2 < s["power_above_cutoff"]["mean"] < 1.0
     assert s["power_above_cutoff_measured"]["mean"] < 0.01
+    assert "variance_removed" not in s
     assert result["filter"]["type"] == "lowpass"
+
+
+def test_bandpass_filters_generated_and_measured():
+    rng = np.random.default_rng(7)
+    length, r = 400, 64
+    t = np.arange(length)[:, None] * TR
+    target = _smooth(rng, length) @ rng.normal(size=(4, r))
+    # slow drift below the band, with its own spatial pattern, in the measured series only
+    drift = 5.0 * np.sin(2 * np.pi * 0.002 * t) * rng.normal(size=r)
+    scan = _scan("sub01-scan01", target[None], target + drift)
+    low = bandlimited.scan_filtering_control(scan)
+    assert low["single_draw_raw"] < 0.9
+    assert low["single_draw_filtered"] == pytest.approx(low["single_draw_raw"], abs=0.02)
+    band = bandlimited.scan_filtering_control(scan, low=0.01)
+    assert band["single_draw_filtered"] > 0.97          # drift removed from the measured FC
+    assert band["single_draw_raw"] == pytest.approx(low["single_draw_raw"])
 
 
 # --- measured effective rank ------------------------------------------------
@@ -185,6 +226,9 @@ def test_measured_effective_rank_known_cases():
     wide = rng.normal(size=(300, 64))
     kept = rank.measured_effective_rank(wide, exclude_non_neural=True)
     assert kept["n_components"] == 64 - len(non_neural_indices(64))
+    assert "rank_fraction" not in kept
+    with pytest.raises(ValueError):                    # no non-neural list for 61 components
+        rank.measured_effective_rank(wide[:, :61], exclude_non_neural=True)
     scans = [_scan(f"sub{i:02d}-scan0{j}", np.zeros((1, 300, 64)), rng.normal(size=(300, 64)))
              for i in range(5) for j in (1, 2)]
     result = rank.summarize(scans + scans[:2], n_boot=200)       # duplicates are ignored

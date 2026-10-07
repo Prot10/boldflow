@@ -4,15 +4,15 @@ The analyses work on cached per-scan trajectories. A *sampled trajectory* is
 built by drawing one independent source per anchor, integrating the flow, and
 overlap-averaging the predicted blocks into a per-TR series (paper Eq. 8).
 ``sample_scan_trajectories`` repeats this ``M`` times for one scan; the
-scripts then derive every statistic (FC, ensemble mean, spread, ...) from the
-resulting ``(M, L, R)`` array, so no analysis needs to re-run inference.
+scripts derive their statistics (FC, ensemble mean, spread, ...) from the
+resulting ``(M, L, R)`` array.
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -41,13 +41,9 @@ def scan_load_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
     return dict(
         dataset=data["dataset"],
         n_rois=int(data["n_rois"]),
-        target_roi=data.get("target_roi"),
-        multi_roi=bool(data.get("multi_roi", True)),
         apply_eeg_filter=bool(data.get("apply_eeg_filter", True)),
         apply_fmri_filter=bool(data.get("apply_fmri_filter", True)),
         normalize_eeg=bool(data.get("normalize_eeg", True)),
-        eeg_lowpass=data.get("eeg_lowpass"),
-        exclude_non_neural=bool(data.get("exclude_non_neural", False)),
         tr=float(data.get("tr", 2.1)),
         tmin=float(data.get("tmin", -32.0)),
         tmax=float(data.get("tmax", 0.0)),
@@ -120,7 +116,6 @@ def sample_scan_trajectories(
     device: str,
     batch_size: int = 64,
     deterministic: bool = False,
-    eeg_transform: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Draw ``n_samples`` independent trajectories for one scan.
 
@@ -130,10 +125,14 @@ def sample_scan_trajectories(
     window. Returns ``(samples (M, L, R), target (L, R))``.
 
     ``deterministic=True`` integrates from the source mean instead and returns
-    a single trajectory. ``eeg_transform`` is applied to each EEG batch before
-    encoding (input controls).
+    a single trajectory; it is the only readout of a model without a learned
+    source scale (no ``distributional_prior_head``).
     """
     model.eval()
+    has_learned_source = hasattr(model, "distributional_prior_head")
+    if not has_learned_source and not deterministic:
+        raise ValueError("the model has no learned source scale: only the "
+                         "deterministic readout is available")
     t_out = int(getattr(model, "n_out_timesteps", 1))
     n = eeg.shape[0]
     tgt = np.asarray(fmri_blocks, dtype=np.float32).reshape(n, t_out, -1)
@@ -143,8 +142,10 @@ def sample_scan_trajectories(
 
     for start in range(0, n, batch_size):
         batch = eeg[start:start + batch_size].to(device)
-        if eeg_transform is not None:
-            batch = eeg_transform(batch)
+        if not has_learned_source:
+            blocks[0, start:start + batch.shape[0]] = (
+                model(batch).float().cpu().numpy().reshape(-1, t_out, r))
+            continue
         z = model.encode_eeg(batch)
         mu, sigma = model.distributional_prior_head(z)
         for m in range(m_total):
@@ -175,18 +176,29 @@ def save_scan(directory: str | Path, item: ScanTrajectories) -> Path:
 
 
 def load_scans(directories: str | Path | Iterable[str | Path]) -> List[ScanTrajectories]:
-    """Load every cached scan under one or more directories (searched recursively)."""
+    """Load every cached scan under one or more directories (searched recursively).
+
+    One call loads the caches of one run per fold: a scan name found twice
+    raises ``ValueError``. Scripts that combine several runs call this once
+    per directory.
+    """
     if isinstance(directories, (str, Path)):
         directories = [directories]
     items: List[ScanTrajectories] = []
+    seen: Dict[str, Path] = {}
     for directory in directories:
         for path in sorted(Path(directory).rglob("*.npz")):
             with np.load(path, allow_pickle=False) as f:
-                items.append(ScanTrajectories(
+                item = ScanTrajectories(
                     scan=str(f["scan"]), subject=str(f["subject"]),
                     fold=int(f["fold"]), target=f["target"],
                     samples=f["samples"], tr=float(f["tr"]),
-                ))
+                )
+            if item.scan in seen:
+                raise ValueError(
+                    f"scan {item.scan!r} is cached twice: {seen[item.scan]} and {path}")
+            seen[item.scan] = path
+            items.append(item)
     if not items:
         raise FileNotFoundError(f"no cached trajectories (*.npz) under {directories}")
     return items
@@ -236,11 +248,11 @@ def fisher_mean(matrices: Sequence[np.ndarray]) -> np.ndarray:
 
 
 def population_templates(items: Sequence["ScanTrajectories"]) -> Dict[int, np.ndarray]:
-    """Fisher-z training-population FC template of every fold.
+    """Fisher-z population FC template of every fold.
 
-    The template of fold ``k`` averages the measured FC (cortical mask) of the
-    cached scans whose subject is not held out in fold ``k``, so it needs the
-    held-out caches of every fold.
+    The template of fold ``k`` is the Fisher-z mean of the measured FC
+    (cortical mask) of the cached scans of all subjects not held out in fold
+    ``k``; it requires the held-out caches of every fold.
     """
     comps = fc_components(items[0].target.shape[1])
     target_fc = [fc_matrix(it.target, comps) for it in items]
@@ -249,8 +261,8 @@ def population_templates(items: Sequence["ScanTrajectories"]) -> Dict[int, np.nd
         held_out = {it.subject for it in items if it.fold == fold}
         train = [fc for fc, it in zip(target_fc, items) if it.subject not in held_out]
         if not train:
-            raise ValueError(f"fold {fold}: no cached scan from a training subject; "
-                             "the template needs the caches of the other folds")
+            raise ValueError(f"fold {fold}: no cached scan of a subject outside the fold; "
+                             "the template requires the caches of the other folds")
         templates[fold] = fisher_z(fisher_mean(train))
     return templates
 

@@ -246,7 +246,7 @@ def parse_args() -> argparse.Namespace:
                    help="Sampled trajectories per evaluation (metrics are averaged).")
     p.add_argument("--n-boot", type=int, default=10000)
     p.add_argument("--seed", type=int, default=None,
-                   help="Sampling / shuffling seed (default: the config seed).")
+                   help="Sampling, shuffling and bootstrap seed (default: the config seed).")
     p.add_argument("--data-root", type=str, default=None,
                    help=f"Override data root (env: {ENV_DATA_ROOT}).")
     p.add_argument("--device", type=str, default=None)
@@ -297,7 +297,7 @@ def main() -> None:
         raise SystemExit("cross-fitting needs at least two subjects with two scans")
 
     rows = cross_fit(rows, args.selection_metric)
-    summary = summarize(rows, n_boot=args.n_boot)
+    summary = summarize(rows, n_boot=args.n_boot, seed=seed)
     print(f"{summary['n_subjects']} subjects, {summary['n_directions']} directions")
     for metric in METRICS:
         s, g = summary[metric], summary[metric]["gain"]
@@ -308,7 +308,7 @@ def main() -> None:
         save_json({"summary": summary, "directions": rows,
                    "grid": [config_name(lr, scope) for lr, scope in configs],
                    "selection_metric": args.selection_metric, "seed": seed}, args.output)
-        print(f"saved to: {args.output}")
+        print(f"saved to {args.output}")
 
 
 if __name__ == "__main__":

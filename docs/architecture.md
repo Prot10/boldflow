@@ -13,7 +13,7 @@ the implementing module.
   sequence-to-sequence: each EEG window predicts the block of
   `T_out = n_out_timesteps` consecutive volumes ending at the anchor TR, so
   the target is `(B, T_out, R)`, flattened to `(B, T_out * R)` for the flow.
-  The paper headline uses `T_out = 4` (flow dimension `D = 256`); `T_out = 1`
+  The main comparison uses `T_out = 4` (flow dimension `D = 256`); `T_out = 1`
   recovers the seq2one variant. The data loader normalises each ROI by
   per-scan absolute 95th percentile.
 

@@ -4,9 +4,11 @@
 Reads cached sampled trajectories (``sample_trajectories.py --n-samples 200``)
 and computes one value per scan for every diagnostic; individual generated
 trajectories are evaluated, not their mean. Scan values are averaged within
-subject and summarised across subjects with a percentile bootstrap. Ratios
-(reference value one) use the geometric mean over subjects, all other
-diagnostics the arithmetic mean.
+subject and summarised across subjects with a percentile bootstrap. Ratios,
+which equal one when the two statistics match, use the geometric mean over
+subjects; all other diagnostics use the arithmetic mean. "Effective rank" is
+the entropy effective rank throughout (exponential of the spectral entropy of
+the normalised eigenvalues).
 
 Per-scan definitions, for samples ``y (M, L, R)`` and measured BOLD ``x (L, R)``:
 
@@ -14,14 +16,15 @@ Per-scan definitions, for samples ``y (M, L, R)`` and measured BOLD ``x (L, R)``
   divided by the RMS source SD (needs ``--source-stats``);
 * prior scales at floor      - fraction of source sigmas at the numerical floor;
 * pairwise RMS / target SD   - RMS difference between two samples over SD of ``x``;
-* conditional effective rank - effective rank of the covariance of ``y`` around
-  the per-TR ensemble mean, pooled over samples and TRs (also divided by R);
+* conditional effective rank - entropy effective rank of the covariance of
+  ``y`` around the per-TR ensemble mean, pooled over samples and TRs (also
+  divided by R);
 * temporal variance          - per-component variance over time, sample / target,
   geometric mean over components;
 * across-component variance  - per-TR variance over components, sample / target,
   geometric mean over TRs;
-* FC effective rank          - effective rank of the within-scan FC matrix,
-  mean over sampled trajectories / target;
+* FC effective rank          - entropy effective rank of the within-scan FC
+  matrix, mean over sampled trajectories / target;
 * spectral TV distance       - total-variation distance between the generated
   and measured Welch power profiles over four bands below 0.15 Hz;
 * lag-1 autocorrelation and fraction of Welch power above 0.15 Hz, generated
@@ -39,7 +42,7 @@ Examples
         --source-stats outputs/analysis/source_stats.json
 
     # the audit itself
-    python scripts/analysis/trajectory_audit.py outputs/trajectories_m200 \\
+    python scripts/analysis/trajectory_audit.py --trajectories outputs/trajectories_m200 \\
         --source-stats outputs/analysis/source_stats.json \\
         --output outputs/analysis/trajectory_audit.json
 """
@@ -56,8 +59,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import numpy as np
 from scipy.signal import welch
 
-from boldflow.analysis import (ScanTrajectories, effective_rank, fc_matrix, load_scans,
-                               subject_bootstrap, subject_means)
+from boldflow.analysis import (ScanTrajectories, fc_matrix, load_scans, subject_bootstrap,
+                               subject_means)
 from boldflow.utils import save_json
 
 EPS = 1e-10
@@ -81,16 +84,13 @@ SUMMARIES = (
 # ---------------------------------------------------------------------------
 
 def entropy_rank(covariance: np.ndarray) -> float:
-    """Effective rank ``exp(H(p))`` with ``p`` the normalised eigenvalue spectrum."""
+    """Entropy effective rank: ``exp(H(p))``, ``p`` the normalised eigenvalue spectrum."""
     eig = np.clip(np.linalg.eigvalsh(np.nan_to_num(covariance)), 0.0, None)
     if eig.sum() <= EPS:
         return 0.0
     p = eig / eig.sum()
     p = p[p > EPS]
     return float(np.exp(-(p * np.log(p)).sum()))
-
-
-RANKS = {"entropy": entropy_rank, "participation": effective_rank}
 
 
 def geometric_mean_ratio(numerator: np.ndarray, denominator: np.ndarray) -> float:
@@ -136,9 +136,14 @@ def total_variation(p: np.ndarray, q: np.ndarray) -> float:
 
 
 def conditional_covariance(samples: np.ndarray) -> np.ndarray:
-    """Covariance over components of samples around the per-TR ensemble mean."""
-    resid = (samples - samples.mean(axis=0, keepdims=True)).reshape(-1, samples.shape[-1])
-    return resid.T @ resid / max(1, resid.shape[0] - 1)
+    """Covariance over components of samples around the per-TR ensemble mean.
+
+    ``samples`` is ``(M, L, R)``; the residuals have ``(M - 1) * L`` degrees of
+    freedom.
+    """
+    m, length, r = samples.shape
+    resid = (samples - samples.mean(axis=0, keepdims=True)).reshape(-1, r)
+    return resid.T @ resid / max(1, (m - 1) * length)
 
 
 # ---------------------------------------------------------------------------
@@ -146,19 +151,23 @@ def conditional_covariance(samples: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 def scan_diagnostics(samples: np.ndarray, target: np.ndarray, *, tr: float = 2.1,
-                     fc_members: int = 50, rank: str = "entropy") -> Dict[str, float]:
-    """All cache-only diagnostics of one scan (``samples (M, L, R)``, ``target (L, R)``)."""
+                     fc_members: Optional[int] = None) -> Dict[str, float]:
+    """All cache-only diagnostics of one scan (``samples (M, L, R)``, ``target (L, R)``).
+
+    ``fc_members`` limits the FC effective rank to the first trajectories
+    (all by default).
+    """
     y = np.asarray(samples, dtype=np.float64)
     x = np.asarray(target, dtype=np.float64)
-    rank_fn = RANKS[rank]
     freqs, psd_y = mean_psd(y, tr)
     _, psd_x = mean_psd(x, tr)
-    cond_rank = rank_fn(conditional_covariance(y))
-    fc_rank_y = float(np.mean([rank_fn(fc_matrix(s)) for s in y[:fc_members]]))
-    fc_rank_x = rank_fn(fc_matrix(x))
+    cond_rank = entropy_rank(conditional_covariance(y))
+    fc_rank_y = float(np.mean([entropy_rank(fc_matrix(s)) for s in y[:fc_members]]))
+    fc_rank_x = entropy_rank(fc_matrix(x))
     return {
         "terminal_rms": float(np.sqrt(y.var(axis=0, ddof=1).mean())),
-        "pairwise_rms_over_target_sd": float(np.sqrt(2.0 * y.var(axis=0).mean()) / x.std(ddof=1)),
+        "pairwise_rms_over_target_sd": float(
+            np.sqrt(2.0 * y.var(axis=0, ddof=1).mean()) / x.std(ddof=1)),
         "conditional_rank": cond_rank,
         "conditional_rank_fraction": cond_rank / x.shape[1],
         "temporal_variance_ratio": geometric_mean_ratio(
@@ -189,7 +198,7 @@ def summarize(values: Sequence[float], subjects: Sequence[str], *, geometric: bo
 
 
 def audit(scans: Sequence[ScanTrajectories], source_stats: Optional[Dict[str, Any]] = None, *,
-          n_samples: Optional[int] = None, fc_members: int = 50, rank: str = "entropy",
+          n_samples: Optional[int] = None, fc_members: Optional[int] = None,
           source_level: str = "trajectory", n_boot: int = 10000, seed: int = 0) -> Dict[str, Any]:
     """Per-scan diagnostics and their subject-bootstrap summaries."""
     per_scan = (source_stats or {}).get("scans", {})
@@ -197,7 +206,7 @@ def audit(scans: Sequence[ScanTrajectories], source_stats: Optional[Dict[str, An
     for scan in scans:
         row = {"scan": scan.scan, "subject": scan.subject, "fold": scan.fold,
                **scan_diagnostics(scan.samples[:n_samples], scan.target, tr=scan.tr,
-                                  fc_members=fc_members, rank=rank)}
+                                  fc_members=fc_members)}
         if scan.scan in per_scan:
             src = per_scan[scan.scan]
             row["source_rms"] = src[f"source_rms_{source_level}"]
@@ -214,7 +223,7 @@ def audit(scans: Sequence[ScanTrajectories], source_stats: Optional[Dict[str, An
     return {"n_scans": len(rows), "n_subjects": len(set(subjects)),
             "n_components": int(scans[0].target.shape[1]),
             "n_samples": int(min(s.samples[:n_samples].shape[0] for s in scans)),
-            "rank_definition": rank, "source_level": source_level,
+            "rank_definition": "entropy", "source_level": source_level,
             "summary": summary, "per_scan": rows}
 
 
@@ -229,7 +238,7 @@ def source_stats_for_scan(sigma_blocks: np.ndarray, sigma_floor: float) -> Dict[
     ``source_rms_trajectory`` is the RMS per-TR SD of the source after the same
     overlap average the trajectories go through (independent draws per anchor:
     a TR covered by ``K`` blocks has variance ``sum sigma^2 / K^2``); it is
-    the like-for-like denominator for the terminal spread and equals the block
+    the default denominator of the terminal/source ratio and equals the block
     value when ``T_out = 1``.
     """
     sigma = np.asarray(sigma_blocks, dtype=np.float64)
@@ -286,7 +295,7 @@ def collect_source_stats(args: argparse.Namespace) -> None:
         stats["scans"][scan] = {"fold": args.fold, **source_stats_for_scan(sigma, floor)}
         print(f"{scan}: {stats['scans'][scan]}")
     save_json(stats, path)
-    print(f"saved {path}")
+    print(f"saved to {path}")
 
 
 # ---------------------------------------------------------------------------
@@ -295,16 +304,15 @@ def collect_source_stats(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("cache_dirs", nargs="*",
+    p.add_argument("--trajectories", type=str, nargs="+", default=None,
                    help="Directories written by sample_trajectories.py.")
     p.add_argument("--source-stats", type=str, default=None,
                    help="JSON written by --collect-source-stats (enables the source rows).")
     p.add_argument("--n-samples", type=int, default=None,
                    help="Use only the first M cached trajectories per scan.")
-    p.add_argument("--fc-members", type=int, default=50,
-                   help="Sampled trajectories used for the FC effective rank.")
-    p.add_argument("--rank", choices=sorted(RANKS), default="entropy",
-                   help="Effective-rank definition (entropy or participation ratio).")
+    p.add_argument("--fc-members", type=int, default=None,
+                   help="Sampled trajectories used for the FC effective rank "
+                        "(default: all cached).")
     p.add_argument("--source-level", choices=["trajectory", "block"], default="trajectory",
                    help="Source scale used as denominator of the terminal/source ratio.")
     p.add_argument("--n-boot", type=int, default=10000)
@@ -350,7 +358,8 @@ def print_table(result: Dict[str, Any]) -> None:
          pair("power_above_cutoff_generated", "power_above_cutoff_measured", pct=True)),
     ]
     print(f"{result['n_scans']} scans, {result['n_subjects']} subjects, "
-          f"M={result['n_samples']}; brackets: subject-bootstrap 95% intervals")
+          f"M={result['n_samples']}; brackets: subject-bootstrap 95% intervals; "
+          "effective rank: entropy effective rank")
     for label, value in table:
         print(f"{label:<46}{value}")
 
@@ -362,16 +371,16 @@ def main() -> None:
             raise SystemExit("--collect-source-stats needs --config, --checkpoint, --source-stats")
         collect_source_stats(args)
         return
-    if not args.cache_dirs:
+    if not args.trajectories:
         raise SystemExit("pass at least one trajectory cache directory")
     source = json.loads(Path(args.source_stats).read_text()) if args.source_stats else None
-    result = audit(load_scans(args.cache_dirs), source, n_samples=args.n_samples,
-                   fc_members=args.fc_members, rank=args.rank,
+    result = audit(load_scans(args.trajectories), source, n_samples=args.n_samples,
+                   fc_members=args.fc_members,
                    source_level=args.source_level, n_boot=args.n_boot, seed=args.seed)
     print_table(result)
     if args.output:
         save_json(result, args.output)
-        print(f"saved {args.output}")
+        print(f"saved to {args.output}")
 
 
 if __name__ == "__main__":

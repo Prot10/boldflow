@@ -11,7 +11,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import numpy as np
 
@@ -58,8 +58,6 @@ class SubjectLevelCVSplitter:
         three validation subjects per fold on NeuroBOLT).
     dataset
         ``"neurobolt"`` or ``"sleep"``; selects the EEG filename regex.
-    task_filter
-        For sleep, restrict to scans containing ``task-<filter>``.
     n_rois
         DiFuMo resolution, used only to verify EEG/fMRI pairing.
     """
@@ -77,7 +75,6 @@ class SubjectLevelCVSplitter:
         seed: int = 42,
         val_ratio: float = 0.2,
         dataset: str = "neurobolt",
-        task_filter: Optional[str] = None,
         n_rois: int = 64,
     ):
         if dataset not in self._PATTERNS:
@@ -87,7 +84,6 @@ class SubjectLevelCVSplitter:
         self.seed = seed
         self.val_ratio = val_ratio
         self.dataset = dataset
-        self.task_filter = task_filter
         self.n_rois = n_rois
         self.eeg_pattern = self._PATTERNS[dataset]
 
@@ -115,8 +111,6 @@ class SubjectLevelCVSplitter:
 
             if self.dataset == "sleep":
                 scan_name = f"{subject_id}_{scan_id}"
-                if self.task_filter and f"task-{self.task_filter}" not in scan_name:
-                    continue
                 fmri_path = fmri_dir / f"{scan_name}_difumo{self.n_rois}_roi.pkl"
                 if not fmri_path.exists():
                     logger.warning("Skipping %s: missing fMRI at %s", scan_name, fmri_path)
@@ -127,9 +121,8 @@ class SubjectLevelCVSplitter:
             self.scans.append(scan_name)
             self.subjects[subject_id].append(scan_name)
 
-        suffix = f" (task={self.task_filter})" if self.task_filter else ""
-        logger.info("Found %d scans from %d subjects%s",
-                    len(self.scans), len(self.subjects), suffix)
+        logger.info("Found %d scans from %d subjects",
+                    len(self.scans), len(self.subjects))
 
     def _create_folds(self) -> None:
         rng = np.random.RandomState(self.seed)

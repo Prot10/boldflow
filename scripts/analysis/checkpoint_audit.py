@@ -6,8 +6,8 @@ fold, the epoch whose checkpoint was selected (best validation Pearson r) out
 of the epoch cap, the last epoch that was trained, and the change in
 validation MSE between the selected epoch and the last trained epoch. A
 positive change means that training past the selected epoch worsened the
-validation error. The mean change is taken over the folds that trained past
-their selected epoch.
+validation error. The mean change is taken over the folds trained past the
+selected epoch.
 
 Examples
 --------
@@ -105,7 +105,7 @@ def main() -> None:
               f"(worse in {summary['n_folds_late_val_mse_worse']})")
     if args.output:
         save_json(summary, args.output)
-        print(f"saved to: {args.output}")
+        print(f"saved to {args.output}")
 
 
 if __name__ == "__main__":

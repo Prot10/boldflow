@@ -39,7 +39,7 @@ with ``x_0 = mu + sigma * eps``, ``lambda = 1``, ``beta = 0.5``. I-CFM (no OT).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -64,12 +64,12 @@ class BoldFlow(nn.Module):
         EEG channels in the input. 26 for NeuroBOLT, 30 for OpenNeuroSleep.
     input_length
         EEG samples per window (= sampling_rate * window_seconds). Default
-        6400 = 32 s at 200 Hz, the paper headline.
+        6400 = 32 s at 200 Hz.
     n_rois
         fMRI parcels per TR (DiFuMo-64 by default; 256 / 512 supported).
     n_out_timesteps
         Seq2seq horizon ``T_out``: number of consecutive DiFuMo volumes
-        predicted per EEG window (default 4, the paper headline). The flow
+        predicted per EEG window (default 4). The flow
         dimension is ``D = n_rois * n_out_timesteps``; ``n_out_timesteps=1``
         recovers the seq2one variant.
     embed_dim
@@ -80,13 +80,13 @@ class BoldFlow(nn.Module):
         Explicit Euler steps used at inference (default 50).
     prior_loss_weight
         Weight ``lambda`` on the beta-NLL prior term (default 1.0, paper Eq. 5).
-        Setting it to 0 removes the prior supervision (mu, sigma stay at their
-        initialisation).
+        Setting it to 0 removes the beta-NLL term; the source is then trained
+        by the flow objective only.
     prior_beta, prior_sigma_floor, prior_init_sigma
         Hyperparameters of the distributional prior and beta-NLL loss.
     """
 
-    # Architectural defaults matching the paper headline (T.Corr=0.326, FC Corr=0.584).
+    # Architectural defaults of the main-comparison configuration.
     DEFAULTS: Dict[str, float] = dict(
         n_channels=26,
         input_length=6400,
@@ -146,9 +146,9 @@ class BoldFlow(nn.Module):
 
         d = self.DEFAULTS
 
-        # Pick the right channel layout. Pass an explicit ``channel_order`` to
-        # use a custom montage; otherwise we default to NeuroBOLT (26) or
-        # OpenNeuroSleep (30) based on ``n_channels``.
+        # Channel layout: an explicit ``channel_order`` selects a custom
+        # montage; otherwise ``n_channels`` selects NeuroBOLT (26) or
+        # OpenNeuroSleep (30).
         if channel_order is None:
             if n_channels == len(DEFAULT_CHANNEL_ORDER):
                 channel_order = DEFAULT_CHANNEL_ORDER
@@ -192,7 +192,6 @@ class BoldFlow(nn.Module):
             n_layers=velocity_layers,
             time_embed_dim=int(d["velocity_time_dim"]),
         )
-        # Attribute name kept stable for compatibility with released checkpoints.
         self.distributional_prior_head = DistributionalPrior(
             cond_dim=embed_dim,
             flow_dim=self.flow_dim,
@@ -253,31 +252,20 @@ class BoldFlow(nn.Module):
         self,
         eeg: torch.Tensor,
         n_samples: int = 50,
-        inference_sigma: float = 1.0,
     ) -> torch.Tensor:
-        """Draw ``n_samples`` flow trajectories. Returns ``(n_samples, B, n_rois)``.
+        """Draw ``n_samples`` predictions per input from independent sources.
 
-        ``inference_sigma`` is a temperature on the learned ``sigma``: 0
-        gives the deterministic readout; 1 matches training-time sampling.
+        The encoder is evaluated once. Returns
+        ``(n_samples, B, n_rois * n_out_timesteps)``: block-level draws, before
+        any overlap-averaging into a per-TR trajectory.
         """
         z_eeg = self.encode_eeg(eeg)
         mu, sigma = self.distributional_prior_head(z_eeg)
         outputs = []
         for _ in range(n_samples):
-            if inference_sigma > 0:
-                eps = torch.randn_like(mu)
-                x0 = mu + inference_sigma * sigma * eps
-            else:
-                x0 = mu
+            x0 = mu + sigma * torch.randn_like(mu)
             outputs.append(euler_integrate(self.velocity_net, x0, z_eeg, self.n_inference_steps))
         return torch.stack(outputs, dim=0)
-
-    @torch.no_grad()
-    def prior_sigma_stats(self, eeg: torch.Tensor) -> Dict[str, float]:
-        """Mean/min/max of the learned source sigma over a batch."""
-        z_eeg = self.encode_eeg(eeg)
-        _, sigma = self.distributional_prior_head(z_eeg)
-        return {"mean": sigma.mean().item(), "min": sigma.min().item(), "max": sigma.max().item()}
 
     def load_pretrained_encoder(
         self,
@@ -317,13 +305,14 @@ class BoldFlow(nn.Module):
         cls,
         checkpoint_path: Union[str, Path],
         device: Union[str, torch.device] = "cpu",
-        strict: bool = False,
+        strict: bool = True,
         **kwargs,
     ) -> "BoldFlow":
         """Instantiate the model and load a full BoldFlow checkpoint.
 
         Accepts a ``best.pt`` written by ``train.py`` (with ``model_state_dict``)
-        or a bare ``state_dict``.
+        or a bare ``state_dict``. With ``strict=True`` (default) a checkpoint
+        whose keys do not match the model raises an error.
         """
         checkpoint_path = Path(checkpoint_path)
         if not checkpoint_path.exists():
@@ -346,3 +335,29 @@ class BoldFlow(nn.Module):
         if only_trainable:
             params = (p for p in params if p.requires_grad)
         return sum(p.numel() for p in params)
+
+
+def load_model(cfg: Dict[str, Any], checkpoint: Union[str, Path],
+               device: Union[str, torch.device] = "cpu") -> nn.Module:
+    """Build the model class named by a config and load a checkpoint strictly.
+
+    ``cfg["model"]["variant"]`` selects :class:`BoldFlow` (absent or
+    ``"default"``) or :class:`boldflow.ablations.BoldFlowPointPrior`
+    (``"point_prior"``). The model is returned on ``device`` in evaluation mode.
+    """
+    m = cfg["model"]
+    variant = m.get("variant", "default")
+    if variant == "default":
+        from boldflow.analysis import model_kwargs
+        return BoldFlow.from_pretrained(checkpoint, device=device, **model_kwargs(cfg))
+    if variant != "point_prior":
+        raise ValueError(f"unknown model variant {variant!r}")
+
+    from boldflow.ablations import BoldFlowPointPrior, point_prior_kwargs
+    checkpoint = Path(checkpoint)
+    if not checkpoint.exists():
+        raise FileNotFoundError(f"checkpoint not found: {checkpoint}")
+    model = BoldFlowPointPrior(**point_prior_kwargs(cfg))
+    state = torch.load(str(checkpoint), map_location=device, weights_only=True)
+    model.load_state_dict(state.get("model_state_dict", state) if isinstance(state, dict) else state)
+    return model.to(device).eval()

@@ -1,18 +1,21 @@
 #!/usr/bin/env python
 """Subject identification from predicted connectomes (paper Table 12).
 
-Each held-out scan is split into two non-overlapping halves and an FC matrix
-is computed per half. ``--gap-seconds`` of frames are dropped at the midpoint
-(default 40 s, i.e. the 32 s EEG context plus the overlap of the predicted
-blocks) so that no EEG sample contributes to predictions in both halves; the
-same frames are dropped from the measured reference. For a subject with
-several scans, the first halves and the second halves are concatenated. Every subject's first-half FC is matched against the
-pool of all subjects' second-half FC by the Pearson correlation of the
-upper-triangular entries; the identification is correct when the best match
-is the same subject. The direction is then reversed and the two accuracies
-are averaged. Chance is ``1 / N`` for a pool of ``N`` subjects. The analysis
-is run on predicted halves (predicted-to-predicted) and on measured halves
-(measured-to-measured reference).
+Each held-out scan is split in time into two non-overlapping halves.
+``--gap-seconds`` of frames centred on the midpoint are left out of both halves
+(default 40 s, which covers the 32 s EEG context plus the overlap of the
+predicted blocks), so that no EEG sample contributes to predictions in both
+halves; the same frames are left out of the measured series. For a subject
+with two scans the first halves of both scans are concatenated, and likewise
+the second halves. One FC matrix is computed per subject and half.
+
+Every subject's first-half FC is matched against the pool of all subjects'
+second-half FC by the Pearson correlation of the upper-triangular entries; the
+identification is correct when the best match is the same subject. The
+direction is then reversed and the two accuracies are averaged. Chance is
+``1 / N`` for a pool of ``N`` subjects. The analysis is run on predicted
+halves (predicted-to-predicted, one sampled trajectory per scan) and on
+measured halves (measured-to-measured).
 
 Reads the caches written by ``sample_trajectories.py``.
 
@@ -91,14 +94,14 @@ def fingerprint(series_by_subject: Dict[str, List[np.ndarray]], *,
     return identification_accuracy(first, second)
 
 
-def summarize(items: Sequence[ScanTrajectories], *, n_average: int = 1,
+def summarize(items: Sequence[ScanTrajectories], *,
               components: Optional[Sequence[int]] = None,
               gap: int = 0) -> Dict[str, Any]:
     """Predicted-to-predicted and measured-to-measured identification."""
     predicted: Dict[str, List[np.ndarray]] = {}
     measured: Dict[str, List[np.ndarray]] = {}
     for item in sorted(items, key=lambda it: it.scan):
-        predicted.setdefault(item.subject, []).append(item.ensemble_mean(n_average))
+        predicted.setdefault(item.subject, []).append(item.samples[0])
         measured.setdefault(item.subject, []).append(item.target)
     kwargs = dict(components=components, gap=gap)
     return {"predicted": fingerprint(predicted, **kwargs),
@@ -109,8 +112,6 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--trajectories", type=str, nargs="+", required=True,
                    help="Cache directories written by sample_trajectories.py.")
-    p.add_argument("--n-average", type=int, default=1,
-                   help="Sampled trajectories averaged before computing FC (1 = one sample).")
     p.add_argument("--components", choices=["all", "cortical"], default="all",
                    help="Component set of the FC matrices.")
     p.add_argument("--gap-seconds", type=float, default=40.0,
@@ -125,8 +126,8 @@ def main() -> None:
     n_rois = items[0].target.shape[1]
     components = fc_components(n_rois) if args.components == "cortical" else None
     gap = int(round(args.gap_seconds / items[0].tr))
-    result = summarize(items, n_average=args.n_average, components=components, gap=gap)
-    result.update(n_average=args.n_average, components=args.components,
+    result = summarize(items, components=components, gap=gap)
+    result.update(components=args.components,
                   gap_seconds=args.gap_seconds, gap_frames=gap)
     for source in ("measured", "predicted"):
         r = result[source]
@@ -134,7 +135,7 @@ def main() -> None:
               f"(x{r['chance_ratio']:.1f} chance, N={r['n_subjects']})")
     if args.output:
         save_json(result, args.output)
-        print(f"saved to: {args.output}")
+        print(f"saved to {args.output}")
 
 
 if __name__ == "__main__":

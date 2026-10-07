@@ -35,3 +35,15 @@ def test_spearman_residual_std_is_high_when_std_tracks_residual():
     targets = residual * np.sign(rng.randn(500))
     rho = spearman_residual_std(targets, means, std)
     assert rho > 0.7
+
+
+def test_scalar_recalibration_ignores_zero_spread_and_needs_some_spread():
+    recal = ScalarRecalibration().fit(np.array([2.0, 2.0, 5.0]), np.array([1.0, 1.0, 0.0]))
+    assert abs(recal.alpha - 2.0) < 1e-12
+    assert np.allclose(recal(np.array([0.5, 1.0])), [1.0, 2.0])
+    try:
+        ScalarRecalibration().fit(np.ones(3), np.zeros(3))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("an all-zero spread cannot be recalibrated")

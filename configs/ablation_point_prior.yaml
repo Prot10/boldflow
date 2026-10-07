@@ -1,9 +1,8 @@
 # Ablation: BOLDFlow with a point (detached) prior and a fixed-scale source.
 # Fixed-sigma AdaLN-Zero configuration of the decoder ablation
-# (row L4 of Table 6, FC Corr = 0.442).
+# (row L4 of Table 6).
 # Identical to configs/neurobolt.yaml except this variant uses
-# boldflow.ablations.BoldFlowPointPrior. The config flag below tells
-# scripts/train.py which model class to instantiate.
+# boldflow.ablations.BoldFlowPointPrior, selected by model.variant.
 
 name: boldflow_point_prior_neurobolt
 seed: 12345
@@ -35,7 +34,6 @@ training:
   lr: 1.0e-4
   weight_decay: 0.01
   warmup_epochs: 3
-  layer_decay: 1.0
   max_grad_norm: 2.0
   mixed_precision: true
   early_stopping_patience: 10
@@ -44,13 +42,11 @@ data:
   dataset: neurobolt
   data_root: /path/to/neurobolt   # or set BOLDFLOW_DATA_ROOT / --data-root
   n_rois: 64
-  multi_roi: true
   tr: 2.1
   tmin: -32.0
   tmax: 0.0
   apply_eeg_filter: true
   apply_fmri_filter: true
   normalize_eeg: true
-  exclude_non_neural: false
   num_workers: 4
   pin_memory: true

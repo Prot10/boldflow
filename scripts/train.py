@@ -6,15 +6,15 @@ Examples
     # NeuroBOLT row of Table 1 (5-fold, 30 epochs/fold)
     python scripts/train.py --config configs/neurobolt.yaml
 
-    # Single fold, 2 epochs (sanity check)
+    # Single fold, 2 epochs
     python scripts/train.py --config configs/neurobolt.yaml --folds 1 --epochs 2
 
     # Match the paper's evaluation protocol (3 seeds per fold, 15 runs total)
     python scripts/train.py --config configs/neurobolt.yaml --seeds 12345 22345 32345
 
     # Path overrides
-    BOLDFLOW_DATA_ROOT=/scratch/neurobolt python scripts/train.py --config configs/neurobolt.yaml
-    python scripts/train.py --config configs/neurobolt.yaml --data-root /scratch/neurobolt
+    BOLDFLOW_DATA_ROOT=/data/neurobolt python scripts/train.py --config configs/neurobolt.yaml
+    python scripts/train.py --config configs/neurobolt.yaml --data-root /data/neurobolt
 """
 from __future__ import annotations
 
@@ -61,35 +61,33 @@ def parse_args() -> argparse.Namespace:
 
 
 def _resolve_pretrained(cfg_value, ckpt_dir):
-    """Pretrained encoder lookup: CLI/config path first, else <ckpt_dir>/reve-base.safetensors."""
-    if cfg_value and Path(cfg_value).exists():
+    """Pretrained encoder path, or ``None`` when the config sets it to null.
+
+    Lookup order: the config path, then ``<ckpt_dir>/reve-base.safetensors``.
+    A configured encoder that is found in neither place is an error.
+    """
+    if not cfg_value:
+        return None
+    if Path(cfg_value).exists():
         return cfg_value
     if ckpt_dir:
         candidate = Path(ckpt_dir) / "reve-base.safetensors"
         if candidate.exists():
             return str(candidate)
-    return None
+    raise SystemExit(
+        f"pretrained encoder not found: {cfg_value}. Run "
+        "scripts/download_pretrained.py, or set pretrained_encoder: null in "
+        "the config to train the encoder from scratch."
+    )
 
 
 def _make_model_factory(cfg: Dict[str, Any], variant: str):
     """Return a zero-arg callable that instantiates the chosen model variant."""
     if variant == "point_prior":
-        from boldflow.ablations import BoldFlowPointPrior
-        m = cfg["model"]
-        kwargs = dict(
-            n_channels=int(m["n_channels"]),
-            input_length=int(m["input_length"]),
-            n_rois=int(m["n_rois"]),
-            embed_dim=int(m["embed_dim"]),
-            velocity_layers=int(m["velocity_layers"]),
-            n_inference_steps=int(m["n_inference_steps"]),
-            sigma_anneal_start=float(m.get("sigma_anneal_start", 0.5)),
-            sigma_anneal_end=float(m.get("sigma_anneal_end", 0.1)),
-            sigma_anneal_epochs=int(m.get("sigma_anneal_epochs", 10)),
-            ot_coupling=bool(m.get("ot_coupling", True)),
-        )
+        from boldflow.ablations import BoldFlowPointPrior, point_prior_kwargs
+        kwargs = point_prior_kwargs(cfg)
         return lambda: BoldFlowPointPrior(**kwargs)
-    return None  # falls back to BoldFlow(**model_kwargs) inside run_cv
+    return None  # run_cv then builds BoldFlow(**model_kwargs)
 
 
 def _run_one_seed(cfg: Dict[str, Any], seed: int, output_dir: Path,
@@ -182,8 +180,7 @@ def main() -> None:
             f"or edit data.data_root in {args.config}."
         )
 
-    # Sanity-check that ROI counts agree, otherwise the model and data shapes
-    # will silently diverge inside training (cryptic shape error).
+    # The model output size and the loaded targets must use the same parcellation.
     if int(cfg["model"]["n_rois"]) != int(cfg["data"]["n_rois"]):
         raise SystemExit(
             f"config mismatch: model.n_rois={cfg['model']['n_rois']} but "
@@ -204,8 +201,7 @@ def main() -> None:
 
     pretrained = _resolve_pretrained(cfg.get("pretrained_encoder"), ckpt_dir)
     if pretrained is None:
-        print("[train] WARNING: pretrained REVE weights not found, "
-              "encoder will be trained from scratch.")
+        print("[train] pretrained_encoder is null: training the encoder from scratch.")
     else:
         print(f"[train] using pretrained encoder: {pretrained}")
 

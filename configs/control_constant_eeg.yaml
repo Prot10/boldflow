@@ -1,4 +1,4 @@
-# Constant-input control (Appendix D): the headline architecture retrained with
+# Constant-input control (Appendix D): the main-comparison architecture retrained with
 # the EEG input replaced by zeros, under the same subject-disjoint protocol.
 # Identical to configs/neurobolt.yaml except data.zero_eeg.
 
@@ -18,7 +18,7 @@ model:
   n_channels: 26
   input_length: 6400          # 32 s at 200 Hz
   n_rois: 64                  # DiFuMo parcels per TR
-  n_out_timesteps: 4          # seq2seq horizon T_out (paper headline)
+  n_out_timesteps: 4          # seq2seq horizon T_out
   embed_dim: 512
   velocity_layers: 4
   n_inference_steps: 50       # Euler steps at test time
@@ -29,11 +29,10 @@ model:
 
 training:
   epochs: 30
-  batch_size: 32              # safe on a 40 GB A100
+  batch_size: 32
   lr: 1.0e-4
   weight_decay: 0.01
   warmup_epochs: 3
-  layer_decay: 1.0            # paper uses no layer-wise LR decay
   max_grad_norm: 2.0
   mixed_precision: true
   early_stopping_patience: 10
@@ -42,7 +41,6 @@ data:
   dataset: neurobolt
   data_root: /path/to/neurobolt   # or set BOLDFLOW_DATA_ROOT / --data-root
   n_rois: 64
-  multi_roi: true
   tr: 2.1
   tmin: -32.0
   tmax: 0.0
@@ -50,6 +48,5 @@ data:
   apply_fmri_filter: true
   normalize_eeg: true
   zero_eeg: true               # EEG replaced by zeros
-  exclude_non_neural: false
   num_workers: 4
   pin_memory: true

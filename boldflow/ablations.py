@@ -4,15 +4,15 @@ The full BOLDFlow uses a learned per-sample distributional prior. This
 module ships the **point-prior** ablation, which replaces it with a
 deterministic ``mu`` and a fixed-scale, noise-annealed source: the
 fixed-sigma AdaLN-Zero configuration of the decoder ablation (row L4 of
-Table 6, FC Corr 0.442).
+Table 6).
 
 The other ablations (context length, parcellation, seq2seq horizon) are
-sweeps over configuration knobs of the headline architecture; see
+sweeps over configuration values of the main-comparison architecture; see
 ``docs/reproducing.md``.
 """
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -27,11 +27,7 @@ def _point_prior_mlp(
     cond_dim: int = 512, flow_dim: int = 64,
     hidden_1: int = 256, hidden_2: int = 128, dropout: float = 0.1,
 ) -> nn.Sequential:
-    """Deterministic prior MLP.
-
-    Keys: ``detached_prior_net.{0,3,6}.weight`` (three ``nn.Linear`` layers
-    at positions 0, 3, 6 inside the ``Sequential``).
-    """
+    """Deterministic prior MLP (three linear layers with GELU and dropout)."""
     return nn.Sequential(
         nn.Linear(cond_dim, hidden_1), nn.GELU(), nn.Dropout(dropout),
         nn.Linear(hidden_1, hidden_2), nn.GELU(), nn.Dropout(dropout),
@@ -44,7 +40,8 @@ def ot_pair(x0: torch.Tensor, x1: torch.Tensor) -> Tuple[torch.Tensor, torch.Ten
 
     Solves the exact assignment between the source and target batches under
     squared Euclidean cost, then draws ``B`` pairs from the resulting plan
-    with replacement.
+    with replacement. Only ``(x0, x1)`` are re-paired; quantities indexed by
+    batch position (the EEG conditioning) are left in batch order.
     """
     from scipy.optimize import linear_sum_assignment
 
@@ -56,6 +53,23 @@ def ot_pair(x0: torch.Tensor, x1: torch.Tensor) -> Tuple[torch.Tensor, torch.Ten
     return x0[i], x1[j]
 
 
+def point_prior_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Constructor arguments for :class:`BoldFlowPointPrior` from a config."""
+    m = cfg["model"]
+    return dict(
+        n_channels=int(m["n_channels"]),
+        input_length=int(m["input_length"]),
+        n_rois=int(m["n_rois"]),
+        embed_dim=int(m["embed_dim"]),
+        velocity_layers=int(m["velocity_layers"]),
+        n_inference_steps=int(m["n_inference_steps"]),
+        sigma_anneal_start=float(m.get("sigma_anneal_start", 0.5)),
+        sigma_anneal_end=float(m.get("sigma_anneal_end", 0.1)),
+        sigma_anneal_epochs=int(m.get("sigma_anneal_epochs", 10)),
+        ot_coupling=bool(m.get("ot_coupling", True)),
+    )
+
+
 class BoldFlowPointPrior(nn.Module):
     """Ablation: deterministic prior + fixed-scale, sigma-annealed source.
 
@@ -65,7 +79,8 @@ class BoldFlowPointPrior(nn.Module):
         from ``sigma_anneal_start`` to ``sigma_anneal_end`` over the first
         ``sigma_anneal_epochs`` epochs.
       * Source and target batches are re-paired by minibatch optimal
-        transport (``ot_coupling=True``) instead of index-wise I-CFM pairing.
+        transport (``ot_coupling=True``) instead of index-wise I-CFM pairing;
+        the EEG embedding passed to the velocity net stays in batch order.
       * Auxiliary loss is plain MSE on ``mu`` (no beta-NLL).
       * Inference integrates from ``x_0 = mu``.
 

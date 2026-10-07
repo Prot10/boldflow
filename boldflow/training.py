@@ -1,8 +1,7 @@
 """Training and evaluation loops for BOLDFlow.
 
-Adds optimiser, AMP, cosine-warmup schedule, periodic validation, best-
-checkpoint tracking, and a final test evaluation. The model itself does the
-heavy lifting in :mod:`boldflow.model`.
+Optimiser, AMP, cosine-warmup schedule, periodic validation, best-checkpoint
+tracking, and the final test evaluation of the model in :mod:`boldflow.model`.
 """
 from __future__ import annotations
 
@@ -68,15 +67,13 @@ def _train_step(
 
 def _overlap_average(
     preds: np.ndarray, tgts: np.ndarray, t_out: int,
-    *, interior_only: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Overlap-average one scan's seq2seq blocks into a per-TR trajectory.
 
     ``preds``/``tgts`` are ``(n_windows, T_out, R)`` for a single scan, with
     windows in anchor (stride-1 TR) order. Window ``i`` offset ``t`` predicts
     within-scan TR ``i + t``; each TR is the average of the ``K_t <= T_out``
-    blocks covering it (paper Eq. 8). ``interior_only=True`` keeps only the
-    TRs covered by all ``T_out`` windows.
+    blocks covering it (paper Eq. 8).
     """
     n, _, r = preds.shape
     n_tr = n + t_out - 1
@@ -89,9 +86,8 @@ def _overlap_average(
             acc[j] += preds[i, t]
             tgt[j] = tgts[i, t]
             cnt[j] += 1
-    keep = cnt == t_out if interior_only else cnt > 0
-    avg = acc[keep] / cnt[keep, None]
-    return avg.astype(np.float32), tgt[keep].astype(np.float32)
+    avg = acc / cnt[:, None]
+    return avg.astype(np.float32), tgt.astype(np.float32)
 
 
 @torch.no_grad()
@@ -112,13 +108,13 @@ def evaluate(
 
     With ``aggregate=True`` and ``scan_sizes`` (the ordered
     ``[(scan, n_anchors), ...]`` list from :func:`create_cv_dataloaders`)
-    metrics follow the headline protocol: seq2seq blocks are overlap-averaged
+    metrics follow the scan-level protocol: seq2seq blocks are overlap-averaged
     per scan into the per-TR trajectory; MSE pools all TRs and components,
     T.Corr is computed within each scan over all components, and FC Corr
     within each scan on the cortical component mask; both are averaged across
     scans.
     Otherwise seq2seq blocks are flattened ``(N, T_out, R) -> (N*T_out, R)``
-    for a quick per-block metric (validation / model selection in training).
+    for the per-block validation metric (model selection in training).
     """
     model.eval()
     # Variants without a learned source scale only have a deterministic readout.
@@ -141,13 +137,13 @@ def evaluate(
         if t_out <= 1:
             metrics = all_metrics(preds_t, targets_t)
         else:
-            # Quick per-block metric: every (T_out, R) block flattened onto
-            # the sample axis.
+            # Per-block validation metric: every (T_out, R) block flattened
+            # onto the sample axis.
             metrics = all_metrics(torch.from_numpy(p3.reshape(-1, r)),
                                   torch.from_numpy(t3.reshape(-1, r)))
         return {"predictions": preds_t, "targets": targets_t, "metrics": metrics}
 
-    # Headline protocol: one per-TR trajectory per scan.
+    # Scan-level protocol: one per-TR trajectory per scan.
     scan_p, scan_t, off = [], [], 0
     for _, n_win in scan_sizes:
         if n_win > 0:
@@ -177,7 +173,6 @@ def train_fold(
     lr: float = 1e-4,
     weight_decay: float = 0.01,
     warmup_epochs: int = 3,
-    layer_decay: float = 1.0,
     max_grad_norm: Optional[float] = 2.0,
     mixed_precision: bool = True,
     device: str = "cuda",
@@ -189,13 +184,13 @@ def train_fold(
 
     Saves ``best.pt`` under ``output_dir/fold_<idx>/`` whenever validation
     Pearson r improves; returns a :class:`FoldResult` with test metrics from
-    the best checkpoint. Test metrics follow the headline protocol of
+    the best checkpoint. Test metrics follow the scan-level protocol of
     :func:`evaluate` (sampled trajectory, ``test_scan_sizes`` from the loader
-    metadata); validation uses the quick per-block metric on the
+    metadata); validation uses the per-block validation metric on the
     deterministic readout.
     """
     model = model.to(device)
-    param_groups = get_param_groups(model, lr, weight_decay, layer_decay)
+    param_groups = get_param_groups(model, lr, weight_decay)
     optimizer = torch.optim.AdamW(param_groups)
     total_steps = len(train_loader) * epochs
     warmup_steps = len(train_loader) * warmup_epochs
@@ -330,7 +325,10 @@ def run_cv(
 
 
 def aggregate(results: list[FoldResult]) -> Dict[str, Any]:
-    """Mean / std of test metrics across folds, JSON-friendly."""
+    """Mean and sample standard deviation (ddof=1) of test metrics across folds.
+
+    The standard deviation of a single fold is 0.0. The result is JSON-friendly.
+    """
     import numpy as np
     if not results:
         return {}
@@ -339,7 +337,7 @@ def aggregate(results: list[FoldResult]) -> Dict[str, Any]:
     for k in keys:
         values = np.array([r.test_metrics[k] for r in results])
         agg[f"mean_test_{k}"] = float(values.mean())
-        agg[f"std_test_{k}"] = float(values.std())
+        agg[f"std_test_{k}"] = float(values.std(ddof=1)) if len(values) > 1 else 0.0
     agg["n_folds"] = len(results)
     agg["fold_results"] = [asdict(r) for r in results]
     return agg

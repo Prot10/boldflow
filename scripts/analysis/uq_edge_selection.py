@@ -12,19 +12,20 @@ held-out scan, with the first ``M`` cached trajectories:
 * time-point level: the same two quantities averaged over components.
 
 At each level the script reports the within-scan Spearman correlation between
-uncertainty and error and the selective error reduction
-``1 - risk(least-uncertain fraction) / risk(random fraction)`` (retention
-fraction one half by default; the random-subset risk is its expectation, the
-mean error over all items). Scan values are averaged within subject (Fisher-z
-for correlations); the reported estimate is the mean over subjects with a
-percentile bootstrap over subjects, a one-sided subject sign-flip test against
-zero, Holm correction across the edge and time-point correlations, and the
-sign of the estimate in every fold.
+uncertainty and error. At the FC-edge level it also reports the selective
+error reduction ``1 - risk(least-uncertain fraction) / risk(random fraction)``
+(retention fraction one half by default; the random-subset risk is its
+expectation, the mean error over all edges). Scan values are averaged within
+subject (Fisher-z for correlations); the reported estimate is the mean over
+subjects with a percentile bootstrap over subjects, a one-sided subject
+sign-flip test against zero, Holm correction across the three correlations,
+and the sign of the estimate in every fold. FC edges are taken within the
+cortical evaluation mask by default.
 
 Examples
 --------
     python scripts/analysis/uq_edge_selection.py \\
-        --input-dir outputs/trajectories --n-samples 50 \\
+        --trajectories outputs/trajectories --n-samples 50 \\
         --output outputs/analysis/uq_edge_selection.json
 """
 from __future__ import annotations
@@ -43,8 +44,8 @@ from boldflow.analysis import (ScanTrajectories, fc_components, fc_matrix, load_
                                subject_bootstrap, subject_means, upper_triangle)
 from boldflow.utils import save_json
 
-LEVELS = ("edge", "component", "timepoint")
-HOLM_FAMILY = ("edge_spearman", "timepoint_spearman")
+HOLM_FAMILY = ("edge_spearman", "component_spearman", "timepoint_spearman")
+ENDPOINTS = HOLM_FAMILY + ("edge_selection_gain",)
 
 
 def safe_spearman(x: np.ndarray, y: np.ndarray) -> float:
@@ -80,7 +81,7 @@ def edge_statistics(item: ScanTrajectories, m: Optional[int] = None,
 def scan_row(item: ScanTrajectories, m: Optional[int] = None,
              components: Optional[Sequence[int]] = None, fraction: float = 0.5,
              ) -> Dict[str, Any]:
-    """Ranking and selection statistics of one scan at the three levels."""
+    """Ranking statistics of one scan at the three levels and the edge selection gain."""
     spread = item.ensemble_std(m).astype(np.float64)
     abs_error = np.abs(item.ensemble_mean(m).astype(np.float64) - item.target)
     pairs = {"edge": edge_statistics(item, m, components),
@@ -89,7 +90,7 @@ def scan_row(item: ScanTrajectories, m: Optional[int] = None,
     row: Dict[str, Any] = {"scan": item.scan, "subject": item.subject, "fold": item.fold}
     for level, (uncertainty, error) in pairs.items():
         row[f"{level}_spearman"] = safe_spearman(uncertainty, error)
-        row[f"{level}_selection_gain"] = selection_gain(uncertainty, error, fraction)
+    row["edge_selection_gain"] = selection_gain(*pairs["edge"], fraction)
     return row
 
 
@@ -141,8 +142,7 @@ def summarize(rows: Sequence[Dict[str, Any]], *, n_boot: int = 10000, n_perm: in
     """Subject-level inference for every endpoint, Holm correction and fold signs."""
     subjects = [r["subject"] for r in rows]
     endpoints: Dict[str, Any] = {}
-    keys = [f"{lv}_{kind}" for kind in ("spearman", "selection_gain") for lv in LEVELS]
-    for index, key in enumerate(keys):
+    for index, key in enumerate(ENDPOINTS):
         fisher = key.endswith("_spearman")
         entry = subject_test([r[key] for r in rows], subjects, fisher=fisher,
                              n_boot=n_boot, n_perm=n_perm, seed=seed + 100 * index)
@@ -157,13 +157,14 @@ def summarize(rows: Sequence[Dict[str, Any]], *, n_boot: int = 10000, n_perm: in
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--input-dir", type=str, nargs="+", required=True,
+    p.add_argument("--trajectories", type=str, nargs="+", required=True,
                    help="Test trajectory cache(s) (all folds).")
     p.add_argument("--n-samples", type=int, default=50,
                    help="Use the first M cached trajectories of every scan.")
     p.add_argument("--fraction", type=float, default=0.5, help="Retention fraction.")
-    p.add_argument("--fc-components", choices=["all", "cortical"], default="all",
-                   help="FC edges among all components or within the cortical-network mask.")
+    p.add_argument("--fc-components", choices=["all", "cortical"], default="cortical",
+                   help="FC edges within the cortical evaluation mask (default) "
+                        "or among all components.")
     p.add_argument("--n-boot", type=int, default=10000)
     p.add_argument("--n-perm", type=int, default=50000)
     p.add_argument("--seed", type=int, default=0)
@@ -173,7 +174,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    items = load_scans(args.input_dir)
+    items = load_scans(args.trajectories)
     n_rois = items[0].target.shape[1]
     components = fc_components(n_rois) if args.fc_components == "cortical" else None
     rows: List[Dict[str, Any]] = [scan_row(i, args.n_samples, components, args.fraction)
@@ -191,7 +192,7 @@ def main() -> None:
         save_json({"n_samples": args.n_samples, "fraction": args.fraction,
                    "fc_components": args.fc_components, "holm_family": list(HOLM_FAMILY),
                    "endpoints": endpoints, "scans": rows}, args.output)
-        print(f"-> {args.output}")
+        print(f"saved to {args.output}")
 
 
 if __name__ == "__main__":

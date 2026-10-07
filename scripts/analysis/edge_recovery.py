@@ -1,15 +1,17 @@
 #!/usr/bin/env python
 """Group-level edge recovery and per-network FC similarity (paper Figure 1).
 
-Per-scan FC matrices on all components are transformed entrywise to Fisher-z,
-averaged over the held-out scans and transformed back. On these group-average
-matrices the script reports
+Per-scan FC matrices on all components (predicted FC from one sampled
+trajectory per scan) are transformed entrywise to Fisher-z, averaged over the
+held-out scans and transformed back. On these group-average matrices the
+script reports
 
 * how many of the ``K`` strongest measured edges (largest ``|FC|``; ``K = 100``
   is about 5% of the 2016 DiFuMo-64 edges) also lie in the prediction's top
   ``K``;
 * per network, the Pearson correlation between measured and predicted FC over
-  the edges with at least one endpoint in the network.
+  the edges with at least one endpoint in the network. A network with fewer
+  than two components is skipped.
 
 Network labels are read from the atlas metadata (``--network-labels``, a CSV
 with one row per component and a ``Yeo_networks7`` column, such as the DiFuMo
@@ -35,18 +37,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import numpy as np
 
-from boldflow.analysis import (ScanTrajectories, fc_matrix, fc_similarity, fisher_mean,
-                               load_scans, upper_triangle)
+from boldflow.analysis import (ScanTrajectories, fc_matrix, fisher_mean, load_scans,
+                               upper_triangle)
 from boldflow.difumo import cortical_network_indices
 from boldflow.utils import save_json
 
 NO_NETWORK = "No network found"
 
 
-def group_average_fc(items: Sequence[ScanTrajectories],
-                     n_average: int = 1) -> Tuple[np.ndarray, np.ndarray]:
+def group_average_fc(items: Sequence[ScanTrajectories]) -> Tuple[np.ndarray, np.ndarray]:
     """Fisher-z group-average ``(predicted, measured)`` FC over scans, all components."""
-    predicted = fisher_mean([fc_matrix(item.ensemble_mean(n_average)) for item in items])
+    predicted = fisher_mean([fc_matrix(item.samples[0]) for item in items])
     measured = fisher_mean([fc_matrix(item.target) for item in items])
     return predicted, measured
 
@@ -66,7 +67,10 @@ def edge_recovery(fc_true: np.ndarray, fc_pred: np.ndarray, k: int = 100) -> Dic
 
 def network_similarity(fc_true: np.ndarray, fc_pred: np.ndarray,
                        labels: Sequence[str]) -> Dict[str, Dict[str, Any]]:
-    """Per-network Pearson r over edges with at least one endpoint in the network."""
+    """Per-network Pearson r over edges with at least one endpoint in the network.
+
+    Networks with fewer than two components are skipped.
+    """
     labels = np.asarray(labels)
     rows, cols = np.triu_indices(len(labels), k=1)
     true_edges, pred_edges = upper_triangle(fc_true), upper_triangle(fc_pred)
@@ -100,12 +104,11 @@ def load_network_labels(path: str, n_rois: int, column: str = "Yeo_networks7") -
     return labels
 
 
-def summarize(items: Sequence[ScanTrajectories], *, k: int = 100, n_average: int = 1,
+def summarize(items: Sequence[ScanTrajectories], *, k: int = 100,
               labels: Sequence[str] | None = None) -> Dict[str, Any]:
-    fc_pred, fc_true = group_average_fc(items, n_average)
+    fc_pred, fc_true = group_average_fc(items)
     result: Dict[str, Any] = {
         "n_scans": len(items), "n_components": int(fc_true.shape[0]),
-        "group_fc_similarity": fc_similarity(fc_true, fc_pred),
         "edge_recovery": edge_recovery(fc_true, fc_pred, k),
     }
     if labels is not None:
@@ -117,8 +120,6 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--trajectories", type=str, nargs="+", required=True,
                    help="Cache directories written by sample_trajectories.py.")
-    p.add_argument("--n-average", type=int, default=1,
-                   help="Sampled trajectories averaged before computing FC (1 = one sample).")
     p.add_argument("--top-k", type=int, default=100, help="Number of strongest edges (K).")
     p.add_argument("--network-labels", type=str, default=None,
                    help="Atlas metadata CSV with a Yeo_networks7 column.")
@@ -131,13 +132,11 @@ def main() -> None:
     items = load_scans(args.trajectories)
     n_rois = items[0].target.shape[1]
     labels = load_network_labels(args.network_labels, n_rois) if args.network_labels else None
-    result = summarize(items, k=args.top_k, n_average=args.n_average, labels=labels)
-    result["n_average"] = args.n_average
+    result = summarize(items, k=args.top_k, labels=labels)
 
     rec = result["edge_recovery"]
     print(f"group-average FC over {result['n_scans']} scans, "
           f"{result['n_components']} components")
-    print(f"  FC similarity (all edges): {result['group_fc_similarity']:.3f}")
     print(f"  top-{rec['k']} measured edges recovered: {rec['recovered']}/{rec['k']} "
           f"(edge density {100 * rec['edge_density']:.1f}%)")
     for network, row in result.get("network_similarity", {}).items():
@@ -147,7 +146,7 @@ def main() -> None:
         print("  per-network similarity skipped (no --network-labels)")
     if args.output:
         save_json(result, args.output)
-        print(f"saved to: {args.output}")
+        print(f"saved to {args.output}")
 
 
 if __name__ == "__main__":

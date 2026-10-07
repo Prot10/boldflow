@@ -1,7 +1,6 @@
 # BOLDFlow on OpenNeuroSleep (paper Table 1).
 # Same architecture as the NeuroBOLT config; differences are dataset and
 # channel count.
-# Paper values: MSE = 0.255,  T.Corr = 0.212 +/- 0.001,  FC Corr = 0.528 +/- 0.017
 #
 # data.data_root: pass --data-root, set BOLDFLOW_DATA_ROOT, or edit below.
 
@@ -19,7 +18,7 @@ model:
   n_channels: 30          # OpenNeuroSleep has 30 EEG channels
   input_length: 6400
   n_rois: 64              # DiFuMo parcels per TR
-  n_out_timesteps: 4      # seq2seq horizon T_out (paper headline)
+  n_out_timesteps: 4      # seq2seq horizon T_out
   embed_dim: 512
   velocity_layers: 4
   n_inference_steps: 50
@@ -34,7 +33,6 @@ training:
   lr: 1.0e-4
   weight_decay: 0.01
   warmup_epochs: 3
-  layer_decay: 1.0
   max_grad_norm: 2.0
   mixed_precision: true
   early_stopping_patience: 10
@@ -43,13 +41,11 @@ data:
   dataset: sleep
   data_root: /path/to/openneurosleep   # or set BOLDFLOW_DATA_ROOT / --data-root
   n_rois: 64
-  multi_roi: true
   tr: 2.1
   tmin: -32.0
   tmax: 0.0
   apply_eeg_filter: true
   apply_fmri_filter: true
   normalize_eeg: true
-  exclude_non_neural: false
   num_workers: 4
   pin_memory: true

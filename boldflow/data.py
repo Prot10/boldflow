@@ -25,7 +25,7 @@ import torch
 from scipy.signal import butter, filtfilt
 from torch.utils.data import DataLoader, TensorDataset
 
-from boldflow.difumo import non_neural_indices, normalize_apostrophes
+from boldflow.difumo import normalize_apostrophes
 from boldflow.splits import CVFold
 
 logger = logging.getLogger(__name__)
@@ -62,8 +62,6 @@ def load_scan(
     *,
     dataset: str = "neurobolt",
     n_rois: int = 64,
-    target_roi: Optional[str] = None,
-    multi_roi: bool = True,
     apply_eeg_filter: bool = True,
     apply_fmri_filter: bool = True,
     normalize_eeg: bool = True,
@@ -72,8 +70,6 @@ def load_scan(
     tmin: float = -32.0,
     tmax: float = 0.0,
     crop: int = 6400,
-    eeg_lowpass: Optional[float] = None,
-    exclude_non_neural: bool = False,
     n_out_timesteps: int = 1,
     channels: Optional[Sequence[str]] = None,
     zero_eeg: bool = False,
@@ -82,7 +78,7 @@ def load_scan(
 
     Returns ``(eeg_epochs, fmri_epochs, metadata)``: one entry per fMRI
     anchor TR with at least ``-tmin`` seconds of EEG history. EEG shape is
-    ``(C, crop)``.
+    ``(C, crop)``. The targets contain all ``R`` DiFuMo components.
 
     With ``n_out_timesteps=1`` (seq2one) each fMRI target is a single volume
     of shape ``(R,)``. With ``n_out_timesteps=T>1`` (seq2seq) the target is
@@ -126,42 +122,16 @@ def load_scan(
 
     if apply_eeg_filter:
         raw.filter(l_freq=0.5, h_freq=None, verbose=False)
-    if eeg_lowpass is not None:
-        raw.filter(l_freq=None, h_freq=eeg_lowpass, verbose=False)
 
     fmri_df = pd.read_pickle(fmri_path)
     roi_labels = [normalize_apostrophes(c) for c in fmri_df.columns.tolist()]
     fmri_np = fmri_df.to_numpy().T.copy()  # (n_rois_total, n_timepoints)
 
-    selected_rois: List[str]
-    if multi_roi:
-        roi_mask = [i for i, label in enumerate(roi_labels)
-                    if "global signal" not in label.lower()]
-        if exclude_non_neural:
-            non_neural = non_neural_indices(n_rois)
-            roi_mask = [i for i in roi_mask if i not in non_neural]
-            logger.info(
-                "Excluded %d non-neural components from DiFuMo-%d (kept %d)",
-                len(non_neural), n_rois, len(roi_mask),
-            )
-        fmri_np = fmri_np[roi_mask]
-        selected_rois = [roi_labels[i] for i in roi_mask]
-    elif target_roi is not None:
-        target_norm = normalize_apostrophes(target_roi)
-        try:
-            roi_idx = roi_labels.index(target_norm)
-        except ValueError as exc:
-            matches = [i for i, l in enumerate(roi_labels) if target_norm.lower() in l.lower()]
-            if not matches:
-                raise ValueError(
-                    f"ROI {target_roi!r} not found; available: {roi_labels}"
-                ) from exc
-            roi_idx = matches[0]
-            logger.info("Matched %r to %r", target_roi, roi_labels[roi_idx])
-        fmri_np = fmri_np[roi_idx : roi_idx + 1]
-        selected_rois = [roi_labels[roi_idx]]
-    else:
-        selected_rois = roi_labels
+    # All DiFuMo components; the global-signal columns are dropped.
+    roi_mask = [i for i, label in enumerate(roi_labels)
+                if "global signal" not in label.lower()]
+    fmri_np = fmri_np[roi_mask]
+    selected_rois = [roi_labels[i] for i in roi_mask]
 
     if apply_fmri_filter:
         nyquist = 0.5 / tr
@@ -202,7 +172,7 @@ def load_scan(
 
     # Pair each EEG window with its fMRI target. ``epochs.selection`` gives the
     # fMRI-trigger index of every retained EEG epoch, in scan order.
-    n_out = max(1, min(int(n_out_timesteps), 4))
+    n_out = max(1, int(n_out_timesteps))
     n_tp = fmri_np.shape[1]
     cropped = [s[:, :crop] if crop > 0 else s for s in eeg_data]
 
@@ -251,8 +221,6 @@ def create_cv_dataloaders(
     *,
     dataset: str = "neurobolt",
     n_rois: int = 64,
-    target_roi: Optional[str] = None,
-    multi_roi: bool = True,
     batch_size: int = 32,
     num_workers: int = 4,
     pin_memory: bool = True,
@@ -262,7 +230,7 @@ def create_cv_dataloaders(
     """Train/val/test loaders for one CV fold.
 
     Extra ``load_kwargs`` are forwarded to :func:`load_scan` (e.g. ``tmin``,
-    ``tmax``, ``exclude_non_neural``, ``n_out_timesteps``).
+    ``tmax``, ``n_out_timesteps``, ``channels``).
 
     For seq2seq (``n_out_timesteps>1``) the per-anchor ``(T, R)`` targets are
     flattened to ``(T*R,)`` so the model flows in ``T*R`` space. The returned
@@ -283,8 +251,6 @@ def create_cv_dataloaders(
                 scan,
                 dataset=dataset,
                 n_rois=n_rois,
-                target_roi=target_roi,
-                multi_roi=multi_roi,
                 **load_kwargs,
             )
             eeg[split_name].extend(scan_eeg)
@@ -296,17 +262,12 @@ def create_cv_dataloaders(
     val_eeg, val_fmri = _stack(eeg["val"]), _stack(fmri["val"])
     test_eeg, test_fmri = _stack(eeg["test"]), _stack(fmri["test"])
 
-    n_out = max(1, min(int(load_kwargs.get("n_out_timesteps", 1) or 1), 4))
+    n_out = max(1, int(load_kwargs.get("n_out_timesteps", 1) or 1))
     if n_out > 1:
         # Flatten the (N, T, R) blocks to (N, T*R): the model flows in T*R space.
         train_fmri = train_fmri.reshape(train_fmri.shape[0], -1)
         val_fmri = val_fmri.reshape(val_fmri.shape[0], -1)
         test_fmri = test_fmri.reshape(test_fmri.shape[0], -1)
-    elif not multi_roi:
-        if train_fmri.ndim == 2 and train_fmri.shape[1] == 1:
-            train_fmri = train_fmri.squeeze(1)
-            val_fmri = val_fmri.squeeze(1)
-            test_fmri = test_fmri.squeeze(1)
 
     cap = max_eval_batch_size or 256
     eval_bs = min(batch_size * 4, cap)

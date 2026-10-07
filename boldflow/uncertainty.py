@@ -1,43 +1,33 @@
-"""Native ensemble UQ + post-hoc recalibration.
+"""Scalar recalibration and scoring of the native ensemble spread.
 
-Pipeline:
-    1. Run ``M`` flow trajectories from samples of the distributional prior.
-       Use ``samples.mean(0)`` as the prediction centre, ``samples.std(0)`` as
-       the raw uncertainty.
-    2. Fit ``ScalarRecalibration`` on a held-out validation split: one
-       multiplier ``alpha`` applied to the raw ensemble spread.
+The ensemble is built from sampled trajectories: the prediction centre is the
+pointwise mean of ``M`` trajectories and the raw uncertainty their
+Bessel-corrected standard deviation, per TR and component
+(:class:`boldflow.analysis.ScanTrajectories`). This module provides
+
+* :class:`ScalarRecalibration`: one multiplier ``alpha`` for the raw spread,
+  fitted on validation residuals;
+* the calibration error and the residual-ranking score of an uncertainty
+  readout.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Tuple
 
 import numpy as np
 import torch
 
-from boldflow.model import BoldFlow
-
-
-@torch.no_grad()
-def native_ensemble(
-    model: BoldFlow,
-    eeg: torch.Tensor,
-    *,
-    n_samples: int = 50,
-    inference_sigma: float = 1.0,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Ensemble forward pass returning ``(mean, std)`` over members."""
-    samples = model.sample_ensemble(eeg, n_samples=n_samples, inference_sigma=inference_sigma)
-    return samples.mean(dim=0), samples.std(dim=0)
-
 
 @dataclass
 class ScalarRecalibration:
-    """Fit a single global multiplier ``alpha`` for the ensemble spread.
+    """Single global multiplier ``alpha`` for the ensemble spread.
 
-    Gaussian maximum-likelihood scale on held-out residuals:
-    ``alpha = sqrt(mean(r^2 / sigma^2))``. Positive scaling changes coverage
-    but not the ranking of predictions by uncertainty.
+    Gaussian maximum-likelihood scale on validation residuals:
+    ``alpha = sqrt(mean(r^2 / s^2))``, the multiplier that gives the
+    standardised residuals unit second moment. Points whose spread does not
+    exceed ``eps`` carry no scale information and are left out of the fit.
+    Positive scaling changes coverage but not the ranking of predictions by
+    uncertainty.
     """
 
     alpha: float = 1.0
@@ -46,6 +36,8 @@ class ScalarRecalibration:
         residuals = np.asarray(residuals, dtype=np.float64).reshape(-1)
         raw_std = np.asarray(raw_std, dtype=np.float64).reshape(-1)
         mask = raw_std > eps
+        if not mask.any():
+            raise ValueError("cannot fit alpha: the ensemble spread is zero everywhere")
         self.alpha = float(np.sqrt(np.mean((residuals[mask] / raw_std[mask]) ** 2)))
         return self
 
@@ -60,10 +52,11 @@ def expected_calibration_error(
     stds: np.ndarray,
     n_bins: int = 10,
 ) -> float:
-    """Reliability-diagram calibration error for Gaussian predictives.
+    """Calibration error of Gaussian prediction intervals.
 
-    Mean absolute deviation between empirical and expected coverage of
-    intervals ``mu +/- z(p) * sigma`` over a uniform bin grid.
+    Mean absolute gap between empirical and nominal coverage of the central
+    intervals ``mu +/- z_{(1+p)/2} * sigma`` at the nominal levels
+    ``p = 1/n_bins, ..., (n_bins - 1)/n_bins``.
     """
     from scipy.stats import norm
 
@@ -81,7 +74,7 @@ def expected_calibration_error(
 def spearman_residual_std(
     targets: np.ndarray, means: np.ndarray, stds: np.ndarray,
 ) -> float:
-    """Spearman correlation between |residual| and predicted std (rank quality)."""
+    """Spearman correlation between absolute residual and uncertainty."""
     from scipy.stats import spearmanr
     res = np.abs(np.asarray(targets) - np.asarray(means)).reshape(-1)
     stds = np.asarray(stds).reshape(-1)

@@ -2,7 +2,7 @@
 """Effect of trajectory averaging at fixed checkpoints (paper Table 14).
 
 For every ensemble size ``M`` the pointwise mean of the first ``M`` cached
-trajectories of each held-out scan is scored with the headline protocol:
+trajectories of each held-out scan is scored with the scan-level protocol:
 MSE pools all TRs and components of a run, T.Corr is the per-component
 Pearson r within each scan, and FC Corr compares within-scan FC matrices on
 the cortical component mask; the last two are averaged across scans. ``M = 1``
@@ -10,17 +10,21 @@ is a single sampled trajectory. FC is computed from the averaged trajectory,
 not by averaging per-trajectory FC estimates.
 
 Every ``fold_<k>`` found under a cache directory is one run (one checkpoint);
-the table reports mean and standard deviation across all runs given.
+the table reports mean and sample standard deviation (ddof=1) across all runs
+given. Each
+directory is loaded separately, so the same scans may appear in several
+directories (one per seed) but not twice within one run.
 
 Examples
 --------
     # one cache directory per seed, each holding fold_1 ... fold_5
     python scripts/analysis/trajectory_averaging.py \\
-        outputs/trajectories_seed0 outputs/trajectories_seed1 \\
+        --trajectories outputs/trajectories_seed0 outputs/trajectories_seed1 \\
         --output outputs/analysis/trajectory_averaging.json
 
     # custom ensemble sizes
-    python scripts/analysis/trajectory_averaging.py outputs/trajectories --m 1 2 5 10
+    python scripts/analysis/trajectory_averaging.py --trajectories outputs/trajectories \\
+        --m 1 2 5 10
 """
 from __future__ import annotations
 
@@ -42,7 +46,7 @@ METRICS = ("fc_corr", "t_corr", "mse")
 
 
 def readout_metrics(scans: Sequence[ScanTrajectories], m: int) -> Dict[str, float]:
-    """Headline metrics of the ``m``-trajectory mean over one run's scans."""
+    """Scan-level metrics of the ``m``-trajectory mean over one run's scans."""
     preds = [s.ensemble_mean(m) for s in scans]
     targets = [s.target for s in scans]
     components = fc_components(targets[0].shape[1])
@@ -56,11 +60,22 @@ def readout_metrics(scans: Sequence[ScanTrajectories], m: int) -> Dict[str, floa
 
 
 def group_runs(directories: Sequence[str | Path]) -> Dict[str, List[ScanTrajectories]]:
-    """Split the cached scans into runs, one per ``(directory, fold)``."""
+    """Split the cached scans into runs, one per ``(directory, fold)``.
+
+    Each distinct directory is one run (labelled ``run_1``, ``run_2``, ... in
+    the order given) and is loaded on its own. A scan name found twice within
+    one run (e.g. the same directory passed twice) raises ``ValueError``.
+    """
     runs: Dict[str, List[ScanTrajectories]] = {}
+    sorted_roots = list(dict.fromkeys(Path(d).resolve() for d in directories))
     for directory in directories:
+        root = Path(directory).resolve()
+        label = f"run_{sorted_roots.index(root) + 1}"
         for scan in load_scans(directory):
-            runs.setdefault(f"{Path(directory).name}/fold_{scan.fold}", []).append(scan)
+            run = runs.setdefault(f"{label}/fold_{scan.fold}", [])
+            if any(other.scan == scan.scan for other in run):
+                raise ValueError(f"scan {scan.scan!r} appears twice in {directory}, fold {scan.fold}")
+            run.append(scan)
     return runs
 
 
@@ -75,7 +90,7 @@ def sweep(runs: Dict[str, List[ScanTrajectories]], m_grid: Sequence[int]) -> Dic
         rows = [r for r in per_run if r["m"] == m]
         summary[str(m)] = {
             k: {"mean": float(np.mean([r[k] for r in rows])),
-                "std": float(np.std([r[k] for r in rows]))}
+                "std": float(np.std([r[k] for r in rows], ddof=1)) if len(rows) > 1 else 0.0}
             for k in METRICS
         }
     return {"m_grid": m_used, "n_runs": len(runs), "summary": summary, "per_run": per_run}
@@ -83,7 +98,7 @@ def sweep(runs: Dict[str, List[ScanTrajectories]], m_grid: Sequence[int]) -> Dic
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("cache_dirs", nargs="+",
+    p.add_argument("--trajectories", type=str, nargs="+", required=True,
                    help="Directories written by sample_trajectories.py.")
     p.add_argument("--m", type=int, nargs="+", default=list(M_GRID),
                    help="Ensemble sizes; values above the cached M are skipped.")
@@ -93,7 +108,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    result = sweep(group_runs(args.cache_dirs), sorted(set(args.m)))
+    result = sweep(group_runs(args.trajectories), sorted(set(args.m)))
     skipped = sorted(set(args.m) - set(result["m_grid"]))
     if skipped:
         print(f"skipped M={skipped}: more than the cached trajectories per scan")
@@ -106,7 +121,7 @@ def main() -> None:
         print(f"{name:<28}{cells}")
     if args.output:
         save_json(result, args.output)
-        print(f"saved {args.output}")
+        print(f"saved to {args.output}")
 
 
 if __name__ == "__main__":

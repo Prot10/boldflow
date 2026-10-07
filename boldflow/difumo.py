@@ -1,8 +1,8 @@
 """DiFuMo parcellation helpers.
 
-DiFuMo atlas (Dadi et al. 2020); we ship 64/256/512 resolutions. A subset
-of components are non-neural (WM tracts, ventricles, CSF, venous sinuses)
-and ``exclude_non_neural=True`` removes them.
+DiFuMo atlas (Dadi et al. 2020) at 64/256/512 components. A subset of the
+components is non-neural (WM tracts, ventricles, CSF, venous sinuses); the
+analysis scripts use ``non_neural_indices`` to group or exclude them.
 """
 from __future__ import annotations
 
@@ -211,8 +211,9 @@ def non_neural_indices(n_rois: int) -> set[int]:
 
 # Components without a cortical network assignment: the atlas metadata
 # (``labels_<N>_dictionary.csv``, column ``Yeo_networks7``) lists them as
-# "No network found". They cover the non-neural components above plus
-# subcortical / cerebellar ones and a few unassigned cortical components.
+# "No network found". This set is defined independently of the non-neural
+# set above. At DiFuMo-64 it contains the three non-neural components, the
+# five deep-gray/cerebellar components and one unassigned cortical component.
 # FC Corr is computed on the remaining components (55 of 64 at DiFuMo-64).
 
 _NO_NETWORK_64: frozenset[int] = frozenset({
@@ -248,9 +249,8 @@ def cortical_network_indices(n_rois: int) -> Optional[List[int]]:
     """Indices of the components used for FC Corr at a DiFuMo resolution.
 
     These are the components assigned to a cortical network in the atlas
-    metadata. Returns ``None`` for an unknown resolution (e.g. after
-    ``exclude_non_neural=True`` changed the component count), in which case
-    FC Corr falls back to all components.
+    metadata. Returns ``None`` for a component count other than 64, 256 or
+    512, in which case FC Corr uses all components.
     """
     excluded = DIFUMO_NO_NETWORK.get(n_rois)
     if excluded is None:

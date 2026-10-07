@@ -81,12 +81,22 @@ def test_subject_pairing_population_only_and_interaction(tmp_path):
     templates = sp.population_templates(model)
     rows = sp.pairing_scores(model, templates, n_trajectories=2)
     const_rows = sp.pairing_scores(constant, templates, n_trajectories=2)
+    # rows are indexed by target scan: the wrong-subject score uses the FC
+    # generated from the other subjects' scans against this scan's measured FC
+    fold1 = [it for it in model if it.fold == 1]
+    triu = np.triu_indices(R, 1)
+    measured = np.corrcoef(fold1[0].target, rowvar=False)[triu]
+    expected = np.mean([np.corrcoef(np.corrcoef(traj, rowvar=False)[triu], measured)[0, 1]
+                        for other in fold1[1:] for traj in other.samples[:2]])
+    assert rows[0]["scan"] == fold1[0].scan
+    assert rows[0]["wrong_subject"] == pytest.approx(expected, abs=1e-6)
     spec = np.mean([r["residual_matched_minus_wrong"] for r in rows])
     pop = np.mean([r["residual_matched_minus_wrong"] for r in const_rows])
     assert spec > 0.3 and abs(pop) < 0.15
     inter = sp.interaction(rows, const_rows, n_boot=200)
     assert inter["matched_minus_wrong"]["ci_low"] > 0
     assert inter["residual_matched_minus_wrong"]["ci_low"] > 0
+    assert sorted(inter) == ["matched_minus_wrong", "residual_matched_minus_wrong"]
     with pytest.raises(ValueError):
         sp.interaction(rows, const_rows[:-1])
 
@@ -119,6 +129,12 @@ def test_dynamic_window_bookkeeping():
     assert dyn.displaced_starts(starts, 100, 40, 30).tolist() == [30, 50, 9, 29]
     with pytest.raises(ValueError):
         dyn.displaced_starts(starts, 100, 40, 61)
+    # disjoint displacement: shift >= window and n_time >= 2 * window + shift - 1
+    assert not dyn.displacement_is_disjoint(100, 40, 30)
+    assert not dyn.displacement_is_disjoint(128, 40, 50)
+    assert dyn.displacement_is_disjoint(129, 40, 50)
+    disp = dyn.displaced_starts(dyn.window_starts(129, 40, 1), 129, 40, 50)
+    assert np.abs(disp - dyn.window_starts(129, 40, 1)).min() == 40
     series = np.random.default_rng(0).standard_normal((100, R))
     fc = dyn.dynamic_fc(series, starts, 40)
     assert fc.shape == (4, R, R)
@@ -173,6 +189,13 @@ def test_dynamic_alignment_stationary_and_short_scans():
     short = ScanTrajectories(scan="sub99-scan01", subject="sub99", fold=1,
                              target=_series(rng, np.eye(R), 100),
                              samples=_series(rng, np.eye(R), 100)[None], tr=2.0)
-    rows = dyn.dynamic_scores(items + [short], templates={})
-    assert np.isnan(rows[-1]["aligned"])
+    # 60-frame windows, 90-frame shift: 208 frames allow an overlapping wrapped window
+    overlap = ScanTrajectories(scan="sub98-scan01", subject="sub98", fold=1,
+                               target=_series(rng, np.eye(R), 208),
+                               samples=_series(rng, np.eye(R), 208)[None], tr=2.0)
+    rows = dyn.dynamic_scores(items + [short, overlap], templates={})
+    assert np.isnan(rows[-1]["aligned"]) and np.isnan(rows[-2]["aligned"])
     assert dyn.summarize(rows, n_boot=50)["aligned"]["n_subjects"] == len(items)
+    # excluded scans do not enter the wrong-subject score of the other scans
+    kept = dyn.dynamic_scores(items, templates={})
+    assert rows[0]["wrong_subject"] == pytest.approx(kept[0]["wrong_subject"])

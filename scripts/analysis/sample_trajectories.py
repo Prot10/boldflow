@@ -9,17 +9,23 @@ files, so inference runs once per checkpoint.
 
 Examples
 --------
-    # 50 trajectories per test scan (UQ, trajectory averaging)
+    # 50 trajectories per test scan (UQ)
     python scripts/analysis/sample_trajectories.py \\
         --config configs/neurobolt.yaml \\
         --checkpoint outputs/boldflow_neurobolt/fold_1/best.pt \\
         --fold 1 --n-samples 50 --output-dir outputs/trajectories
 
-    # 200 trajectories per scan for the held-out trajectory audit
+    # 200 trajectories per scan (trajectory averaging, held-out trajectory audit)
     python scripts/analysis/sample_trajectories.py ... --n-samples 200
 
     # validation split, used to fit the scalar recalibration
     python scripts/analysis/sample_trajectories.py ... --split val
+
+    # constant-input control: the generator retrained with zero EEG
+    python scripts/analysis/sample_trajectories.py \\
+        --config configs/control_constant_eeg.yaml \\
+        --checkpoint outputs/boldflow_control_constant_eeg/fold_1/best.pt \\
+        --fold 1 --n-samples 200 --output-dir outputs/trajectories_constant_input
 """
 from __future__ import annotations
 
@@ -32,10 +38,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import numpy as np
 import torch
 
-from boldflow.analysis import (ScanTrajectories, model_kwargs, sample_scan_trajectories,
-                               save_scan, scan_load_kwargs, subject_of)
+from boldflow.analysis import (ScanTrajectories, sample_scan_trajectories, save_scan,
+                               scan_load_kwargs, subject_of)
 from boldflow.data import load_scan
-from boldflow.model import BoldFlow
+from boldflow.model import load_model
 from boldflow.splits import SubjectLevelCVSplitter
 from boldflow.utils import (ENV_DATA_ROOT, autodetect_device, load_yaml_config,
                             resolve_path, set_seed, setup_logging)
@@ -51,8 +57,6 @@ def parse_args() -> argparse.Namespace:
                    help="Independent sampled trajectories per scan (M).")
     p.add_argument("--deterministic", action="store_true",
                    help="Store the single source-mean trajectory instead.")
-    p.add_argument("--zero-eeg", action="store_true",
-                   help="Replace the EEG input by zeros (constant-input control).")
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--seed", type=int, default=None,
                    help="Sampling seed (default: the config seed).")
@@ -80,9 +84,12 @@ def main() -> None:
     ).get_fold(args.fold)
     scans = fold.test_scans if args.split == "test" else fold.val_scans
 
-    model = BoldFlow.from_pretrained(args.checkpoint, device=device, **model_kwargs(cfg))
+    model = load_model(cfg, args.checkpoint, device)
+    if not hasattr(model, "distributional_prior_head") and not args.deterministic:
+        raise SystemExit("this model variant has no learned source scale and cannot draw "
+                         "sampled trajectories; pass --deterministic to cache its "
+                         "source-mean trajectory.")
     set_seed(seed if args.seed is None else args.seed)
-    transform = torch.zeros_like if args.zero_eeg else None
     out_dir = Path(args.output_dir) / f"fold_{args.fold}"
 
     for scan in scans:
@@ -92,7 +99,7 @@ def main() -> None:
         samples, target = sample_scan_trajectories(
             model, torch.from_numpy(np.stack(eeg)).float(), np.stack(fmri),
             n_samples=args.n_samples, device=device, batch_size=args.batch_size,
-            deterministic=args.deterministic, eeg_transform=transform,
+            deterministic=args.deterministic,
         )
         path = save_scan(out_dir, ScanTrajectories(
             scan=scan, subject=subject_of(scan, dataset), fold=args.fold,

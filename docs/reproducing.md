@@ -33,7 +33,7 @@ Pulls `model.safetensors` from `brain-bzh/reve-base` into
 ## 2. Train (paper protocol)
 
 ```bash
-# Headline: 5-fold CV, 30 epochs/fold, 3 seeds = 15 runs
+# Main comparison: 5-fold CV, 30 epochs/fold, 3 seeds = 15 runs
 python scripts/train.py --config configs/neurobolt.yaml --seeds 12345 22345 32345
 # Subject partitions come from the config seed and are shared across --seeds.
 
@@ -117,9 +117,9 @@ The release ships one ablation variant via `boldflow.ablations`:
   -- `boldflow.ablations.BoldFlowPointPrior`. Train it with
   `python scripts/train.py --config configs/ablation_point_prior.yaml`.
 
-The other Table 1 baselines (NeuroBOLT joint, NeuroBOLT†, REVE-NoFT, REVE-FT) are
-reimplementations of independently-published architectures; we point readers
-to the original NeuroBOLT and REVE repositories for those baselines.
+The other Table 1 baselines (NeuroBOLT joint, NeuroBOLT†, REVE-NoFT, REVE-FT)
+build on independently published architectures, available from the NeuroBOLT
+and REVE repositories.
 
 The context-length sweep, parcellation sweep (64/256/512), and seq2seq
 operating-point ablation are reproduced by changing config knobs:
@@ -128,7 +128,7 @@ operating-point ablation are reproduced by changing config knobs:
 | ------------------------- | ----------------------------------- |
 | Context length            | `data.tmin` (and `model.input_length`) |
 | Parcellation              | `data.n_rois` and `model.n_rois`    |
-| Seq2seq horizon T_out      | `model.n_out_timesteps` (1 = seq2one, 4 = headline) |
+| Seq2seq horizon T_out      | `model.n_out_timesteps` (1 = seq2one, 4 = main comparison) |
 
 Retrained controls and ablations with their own config:
 
@@ -185,7 +185,7 @@ Default seed is 12345. Determinism is not perfect because some flow-matching
 kernels lack deterministic implementations on GPU; fold-to-fold scatter from
 re-runs is well below the reported per-seed standard deviation.
 
-## 9. Sanity check (no GPU, no real data)
+## 9. Quick run (CPU)
 
 ```bash
 pytest tests/                          # under a minute on CPU

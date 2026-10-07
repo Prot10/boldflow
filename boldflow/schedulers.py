@@ -1,9 +1,4 @@
-"""Cosine-with-warmup LR + layer-wise LR decay parameter groups.
-
-The paper uses cosine-with-warmup and ``layer_decay=1.0`` (no decay) on top
-of the released REVE weights. Lower values are exposed for users who want
-to reproduce a BEiT/MAE-style fine-tuning ablation.
-"""
+"""Cosine learning-rate schedule with linear warmup, and optimizer parameter groups."""
 from __future__ import annotations
 
 import math
@@ -13,7 +8,13 @@ import torch
 
 
 class CosineAnnealingWarmup:
-    """Cosine LR schedule preceded by linear warmup, parameterised in steps."""
+    """Cosine LR schedule preceded by linear warmup, parameterised in steps.
+
+    The learning rate of optimizer step ``k`` (1-indexed) is
+    ``base_lr * k / warmup_steps`` during warmup and follows a cosine from
+    ``base_lr`` to ``min_lr`` afterwards. The rate of the first step is set at
+    construction; call :meth:`step` after every optimizer step.
+    """
 
     def __init__(
         self,
@@ -28,8 +29,10 @@ class CosineAnnealingWarmup:
         self.min_lr = min_lr
         self.base_lrs = [group["lr"] for group in optimizer.param_groups]
         self.step_count = 0
+        self.step()
 
     def step(self) -> None:
+        """Set the learning rate of the next optimizer step."""
         self.step_count += 1
         for group, base_lr in zip(self.optimizer.param_groups, self.base_lrs, strict=True):
             group["lr"] = self._lr_for(base_lr)
@@ -48,45 +51,18 @@ def get_param_groups(
     model: torch.nn.Module,
     base_lr: float,
     weight_decay: float = 0.01,
-    layer_decay: float = 1.0,
 ) -> List[dict]:
-    """Optimizer parameter groups with optional layer-wise LR decay.
+    """Optimizer parameter groups at one learning rate.
 
-    Encoder layer at depth ``i`` gets LR ``base_lr * layer_decay^(n_layers - i)``.
-    Biases and norm parameters go into a no-weight-decay group.
+    Biases and normalisation parameters go into a group without weight decay.
     """
-    if not hasattr(model, "encoder") or not hasattr(model.encoder, "transformer"):
-        decay = [p for n, p in model.named_parameters() if p.requires_grad and not _no_decay(n)]
-        no_decay = [p for n, p in model.named_parameters() if p.requires_grad and _no_decay(n)]
-        return [
-            {"params": decay, "lr": base_lr, "weight_decay": weight_decay},
-            {"params": no_decay, "lr": base_lr, "weight_decay": 0.0},
-        ]
-
-    n_layers = len(model.encoder.transformer.layers)
-    groups: dict[tuple[int, bool], dict] = {}
-
-    def add(param: torch.nn.Parameter, depth: int, no_decay: bool) -> None:
-        scale = layer_decay ** (n_layers - depth) if layer_decay < 1.0 else 1.0
-        key = (depth, no_decay)
-        if key not in groups:
-            groups[key] = {
-                "params": [], "lr": base_lr * scale,
-                "weight_decay": 0.0 if no_decay else weight_decay,
-            }
-        groups[key]["params"].append(param)
-
-    for name, param in model.named_parameters():
-        if not param.requires_grad:
-            continue
-        no_decay = _no_decay(name)
-        if name.startswith("encoder.transformer.layers."):
-            depth = int(name.split(".")[3])
-        else:
-            depth = n_layers
-        add(param, depth, no_decay)
-
-    return list(groups.values())
+    named = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
+    return [
+        {"params": [p for n, p in named if not _no_decay(n)],
+         "lr": base_lr, "weight_decay": weight_decay},
+        {"params": [p for n, p in named if _no_decay(n)],
+         "lr": base_lr, "weight_decay": 0.0},
+    ]
 
 
 def _no_decay(name: str) -> bool:

@@ -42,7 +42,7 @@ def test_calibrated_ensemble_has_nominal_coverage_and_unit_alpha():
     rng = np.random.default_rng(0)
     val = [_gaussian_scan(rng, f"sub0{i}-scan01", 1) for i in range(2)]
     test = [_gaussian_scan(rng, f"sub1{i}-scan01", 1) for i in range(2)]
-    fold = calibration.run(val, test, m=50)["folds"]["1"]
+    fold = calibration.run([(val, test)], m=50)["runs"]["1/fold_1"]
     assert abs(fold["alpha"] - 1.0) < 0.05
     for readout in ("raw", "recalibrated"):
         assert abs(fold[readout]["coverage"] - 0.95) < 0.02
@@ -56,21 +56,46 @@ def test_narrow_ensemble_recovers_scale_and_keeps_ranking():
            _gaussian_scan(rng, "sub02-scan01", 2, narrow=k)]
     test = [_gaussian_scan(rng, "sub03-scan01", 1, narrow=k),
             _gaussian_scan(rng, "sub04-scan01", 2, narrow=k)]
-    result = calibration.run(val, test, m=50)
-    assert result["n_folds"] == 2
-    for fold in result["folds"].values():
+    result = calibration.run([(val, test)], m=50)
+    assert result["n_runs"] == 2
+    for fold in result["runs"].values():
         assert abs(fold["alpha"] - k) < 0.25
         assert fold["raw"]["coverage"] < 0.5
         assert abs(fold["recalibrated"]["coverage"] - 0.95) < 0.02
         assert fold["recalibrated"]["calibration_error"] < fold["raw"]["calibration_error"]
         assert abs(fold["raw"]["spearman"] - fold["recalibrated"]["spearman"]) < 1e-12
     assert abs(result["summary"]["recalibrated"]["coverage"]["mean"] - 0.95) < 0.02
+    assert set(result["runs"]["1/fold_1"]["raw"]) == {"spearman", "calibration_error", "coverage"}
+
+
+def test_runs_are_folds_times_cache_pairs_and_splits_must_be_disjoint():
+    rng = np.random.default_rng(6)
+
+    def pair(narrow):
+        val = [_gaussian_scan(rng, f"sub0{f}-scan01", f, narrow=narrow, length=200) for f in (1, 2)]
+        test = [_gaussian_scan(rng, f"sub1{f}-scan01", f, narrow=narrow, length=200) for f in (1, 2)]
+        return val, test
+
+    pairs = [pair(2.0), pair(4.0)]              # two training seeds, two folds each
+    result = calibration.run(pairs, m=50)
+    assert result["n_runs"] == 4
+    assert sorted(result["runs"]) == ["1/fold_1", "1/fold_2", "2/fold_1", "2/fold_2"]
+    alphas = [result["runs"][k]["alpha"] for k in sorted(result["runs"])]
+    assert all(abs(a - 2.0) < 0.2 for a in alphas[:2]) and all(abs(a - 4.0) < 0.4 for a in alphas[2:])
+    assert abs(result["summary"]["alpha"]["std"] - np.std(alphas, ddof=1)) < 1e-12
+
+    val, test = pairs[0]
+    try:
+        calibration.run([(val, test + val[:1])], m=50)
+    except ValueError as err:
+        assert "share subject" in str(err)
+    else:
+        raise AssertionError("overlapping validation and test subjects must be rejected")
 
 
 def test_calibration_helpers_known_values():
     target, mean = np.array([[0.0], [0.0], [0.0], [0.0]]), np.array([[1.0], [1.0], [3.0], [3.0]])
     std = np.ones((4, 1))
-    assert abs(calibration.fit_scalar_alpha(target, mean, std) - np.sqrt(5.0)) < 1e-12
     assert calibration.interval_coverage(target, mean, std, level=0.95) == 0.5
 
 
@@ -106,7 +131,11 @@ def test_edge_selection_detects_informative_spread():
         assert e["positive_folds"] == e["n_folds"] == 2 and e["n_subjects"] == 8
     assert out["edge_spearman"]["p_greater_zero"] < 0.05
     assert out["edge_spearman"]["p_holm"] >= out["edge_spearman"]["p_greater_zero"]
-    assert "p_holm" in out["timepoint_spearman"] and "p_holm" not in out["component_spearman"]
+    assert set(out) == {"edge_spearman", "component_spearman", "timepoint_spearman",
+                        "edge_selection_gain"}
+    assert all("p_holm" in out[key] for key in edges.HOLM_FAMILY)
+    assert "p_holm" not in out["edge_selection_gain"]
+    assert out["component_spearman"]["p_holm"] >= out["component_spearman"]["p_greater_zero"]
 
 
 def test_subject_test_null_is_not_significant():

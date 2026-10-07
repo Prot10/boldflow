@@ -17,7 +17,7 @@ model-minus-constant difference is bootstrapped over subjects.
 Examples
 --------
     python scripts/analysis/constant_input_fc.py \\
-        --trajectory-dir outputs/trajectories \\
+        --trajectories outputs/trajectories \\
         --constant-input-dir outputs/trajectories_constant_input \\
         --output outputs/analysis/constant_input_fc.json
 """
@@ -98,7 +98,7 @@ def compare(
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--trajectory-dir", type=str, nargs="+", required=True,
+    p.add_argument("--trajectories", type=str, nargs="+", required=True,
                    help="Cached trajectories of the model.")
     p.add_argument("--constant-input-dir", type=str, nargs="+", required=True,
                    help="Cached trajectories of the constant-input generator.")
@@ -108,13 +108,13 @@ def parse_args() -> argparse.Namespace:
                    help="Trajectories in the ensemble mean (default: all cached).")
     p.add_argument("--n-boot", type=int, default=10000)
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--output", type=str, required=True)
+    p.add_argument("--output", type=str, default=None, help="JSON output path.")
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    model_rows = fc_corr_scores(load_scans(args.trajectory_dir),
+    model_rows = fc_corr_scores(load_scans(args.trajectories),
                                 args.n_trajectories, args.ensemble_size)
     constant_rows = fc_corr_scores(load_scans(args.constant_input_dir),
                                    args.n_trajectories, args.ensemble_size)
@@ -135,8 +135,9 @@ def main() -> None:
         print(f"  {field:<14s} model {s['model']['fold_mean']:.3f}  "
               f"constant-input {s['constant_input']['fold_mean']:.3f}  "
               f"difference {d['mean']:+.3f} [{d['ci_low']:+.3f}, {d['ci_high']:+.3f}]")
-    save_json(result, args.output)
-    print(f"Saved {args.output}")
+    if args.output:
+        save_json(result, args.output)
+        print(f"saved to {args.output}")
 
 
 if __name__ == "__main__":

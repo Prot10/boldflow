@@ -2,17 +2,20 @@
 """Source-spread preservation through the ODE flow.
 
 Corresponds to Table 10 ("Source-spread preservation through the ODE flow").
-Unlike the other analysis scripts this one runs the model. For up to 512
-validation windows of one fold it draws ``M`` sources per window, integrates
-each through the flow, and reports
+The script runs the model on the first 512 validation windows of one fold
+(fewer if the validation scans have fewer): it draws ``M`` sources per window,
+integrates each through the flow, and reports
 
 * ``std(tau=0)``: Bessel-corrected std across the ``M`` sources, averaged
-  over output coordinates and windows,
+  over the output coordinates and the windows,
 * ``std(tau=1)``: the same for the ``M`` flow outputs,
 * spread preserved ``= std(tau=1) / std(tau=0)``,
-* T. Corr: per-coordinate Pearson correlation between one sampled prediction
-  and the target across the windows, averaged over coordinates and over the
-  ``M`` draws.
+* T. Corr: for each of the ``M`` draws, the Pearson correlation across these
+  windows between the predicted and the target value of every output
+  coordinate, averaged over the output coordinates and then over the draws.
+
+The output coordinates are the ``T_out * R`` entries of a predicted block
+(``R`` for a sequence-to-one model).
 
 The learned-source model (``BoldFlow``) samples ``mu + sigma(x) * eps``. For
 the fixed-scale ablation (config with ``model.variant: point_prior``) the
@@ -47,11 +50,11 @@ import numpy as np
 import torch
 
 from boldflow.ablations import BoldFlowPointPrior
-from boldflow.analysis import model_kwargs, scan_load_kwargs
+from boldflow.analysis import scan_load_kwargs
 from boldflow.data import load_scan
 from boldflow.flow import euler_integrate
 from boldflow.metrics import pearson_r
-from boldflow.model import BoldFlow
+from boldflow.model import load_model
 from boldflow.splits import SubjectLevelCVSplitter
 from boldflow.utils import (ENV_DATA_ROOT, autodetect_device, load_yaml_config,
                             resolve_path, save_json, set_seed, setup_logging)
@@ -59,25 +62,6 @@ from boldflow.utils import (ENV_DATA_ROOT, autodetect_device, load_yaml_config,
 
 def is_point_prior(cfg: Dict[str, Any]) -> bool:
     return cfg["model"].get("variant", "default") == "point_prior"
-
-
-def load_model(cfg: Dict[str, Any], checkpoint: str, device: str) -> torch.nn.Module:
-    """Instantiate the model class named by the config and load a checkpoint."""
-    if not is_point_prior(cfg):
-        return BoldFlow.from_pretrained(checkpoint, device=device, **model_kwargs(cfg))
-    m = cfg["model"]
-    model = BoldFlowPointPrior(
-        n_channels=int(m["n_channels"]), input_length=int(m["input_length"]),
-        n_rois=int(m["n_rois"]), embed_dim=int(m["embed_dim"]),
-        velocity_layers=int(m["velocity_layers"]),
-        n_inference_steps=int(m["n_inference_steps"]),
-        sigma_anneal_start=float(m.get("sigma_anneal_start", 0.5)),
-        sigma_anneal_end=float(m.get("sigma_anneal_end", 0.1)),
-        sigma_anneal_epochs=int(m.get("sigma_anneal_epochs", 10)),
-    )
-    state = torch.load(str(checkpoint), map_location=device, weights_only=True)
-    model.load_state_dict(state.get("model_state_dict", state))
-    return model.to(device).eval()
 
 
 def source_parameters(model: torch.nn.Module, z: torch.Tensor,
@@ -195,7 +179,7 @@ def main() -> None:
     if args.output:
         save_json({"fold": args.fold, "config": Path(args.config).name, "rows": rows},
                   args.output)
-        print(f"-> {args.output}")
+        print(f"saved to {args.output}")
 
 
 if __name__ == "__main__":

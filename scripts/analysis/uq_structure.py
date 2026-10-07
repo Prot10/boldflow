@@ -9,9 +9,9 @@ and 56 cortical components.
 
 Per scan and component the script computes the time-averaged ensemble spread
 (Bessel-corrected std over the first ``M`` trajectories) and three properties
-of the measured BOLD: temporal SD, roughness (one minus the lag-1 autocorrelation) and the
-fraction of Welch power in 0.08-0.15 Hz. Scans are averaged within subject and
-subjects with equal weight. Reported:
+of the measured BOLD: temporal SD, roughness (one minus the lag-1
+autocorrelation) and the fraction of Welch power in 0.08-0.15 Hz. Scans are
+averaged within subject and subjects with equal weight. Reported:
 
 * mean spread in deep-gray/cerebellar versus cortical components, with a
   subject bootstrap interval and a component-label permutation p-value;
@@ -23,7 +23,7 @@ subjects with equal weight. Reported:
 Examples
 --------
     python scripts/analysis/uq_structure.py \\
-        --input-dir outputs/trajectories --n-samples 50 \\
+        --trajectories outputs/trajectories --n-samples 50 \\
         --output outputs/analysis/uq_structure.json
 """
 from __future__ import annotations
@@ -79,7 +79,7 @@ def target_dynamics(target: np.ndarray, tr: float) -> Dict[str, np.ndarray]:
 
 
 def scan_component_stats(item: ScanTrajectories, m: Optional[int] = None) -> Dict[str, np.ndarray]:
-    """Per-component spread, absolute error and target dynamics of one scan."""
+    """Per-component time-averaged spread and target dynamics of one scan."""
     spread = item.ensemble_std(m).astype(np.float64).mean(axis=0)
     return {"spread": spread, **target_dynamics(item.target, item.tr)}
 
@@ -211,7 +211,7 @@ def analyse(items: Sequence[ScanTrajectories], m: Optional[int] = None, *,
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--input-dir", type=str, nargs="+", required=True,
+    p.add_argument("--trajectories", type=str, nargs="+", required=True,
                    help="Test trajectory cache(s) (all folds).")
     p.add_argument("--n-samples", type=int, default=50,
                    help="Use the first M cached trajectories of every scan.")
@@ -224,7 +224,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    result = analyse(load_scans(args.input_dir), args.n_samples, n_boot=args.n_boot,
+    result = analyse(load_scans(args.trajectories), args.n_samples, n_boot=args.n_boot,
                      n_perm=args.n_perm, seed=args.seed)
     g = result["group_contrast"]
     print(f"{result['n_scans']} scans, {result['n_subjects']} subjects, M={args.n_samples}")
@@ -240,7 +240,7 @@ def main() -> None:
               f"[{partial['ci_low']:+.3f}, {partial['ci_high']:+.3f}]")
     if args.output:
         save_json(result, args.output)
-        print(f"-> {args.output}")
+        print(f"saved to {args.output}")
 
 
 if __name__ == "__main__":

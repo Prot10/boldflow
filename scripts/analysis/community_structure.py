@@ -5,7 +5,8 @@ For every held-out scan the predicted and the measured FC matrices are
 thresholded at the same edge density (the strongest 5% of absolute
 correlations), Louvain community detection (resolution ``gamma = 1``) is run on
 each weighted graph, and the adjusted Rand index (ARI) between the two
-partitions is computed. The table entry is the mean ARI over held-out scans.
+partitions is computed. The predicted FC is that of one sampled trajectory
+(the first cached one). The table entry is the mean ARI over held-out scans.
 
 Reads the caches written by ``sample_trajectories.py``. Requires ``networkx``
 for the Louvain step.
@@ -15,9 +16,6 @@ Examples
     python scripts/analysis/community_structure.py \\
         --trajectories outputs/trajectories \\
         --output outputs/analysis/community_structure.json
-
-    # FC of the mean of 50 sampled trajectories, cortical components only
-    python scripts/analysis/community_structure.py ... --n-average 50 --components cortical
 """
 from __future__ import annotations
 
@@ -97,11 +95,11 @@ def community_ari(predicted: np.ndarray, measured: np.ndarray, *, density: float
                                louvain_labels(fc_pred, **kwargs))
 
 
-def summarize(items: Sequence[ScanTrajectories], *, n_average: int = 1,
+def summarize(items: Sequence[ScanTrajectories], *,
               components: Optional[Sequence[int]] = None, **kwargs) -> Dict[str, Any]:
     """Per-scan ARI and its mean / spread over held-out scans."""
     per_scan = {
-        item.scan: community_ari(item.ensemble_mean(n_average), item.target,
+        item.scan: community_ari(item.samples[0], item.target,
                                  components=components, **kwargs)
         for item in items
     }
@@ -119,8 +117,6 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--trajectories", type=str, nargs="+", required=True,
                    help="Cache directories written by sample_trajectories.py.")
-    p.add_argument("--n-average", type=int, default=1,
-                   help="Sampled trajectories averaged before computing FC (1 = one sample).")
     p.add_argument("--components", choices=["all", "cortical"], default="all",
                    help="Component set of the FC matrices.")
     p.add_argument("--density", type=float, default=0.05, help="Retained edge density.")
@@ -135,16 +131,15 @@ def main() -> None:
     items = load_scans(args.trajectories)
     n_rois = items[0].target.shape[1]
     components = fc_components(n_rois) if args.components == "cortical" else None
-    result = summarize(items, n_average=args.n_average, components=components,
+    result = summarize(items, components=components,
                        density=args.density, gamma=args.gamma, seed=args.seed)
-    result.update(density=args.density, gamma=args.gamma, n_average=args.n_average,
-                  components=args.components)
+    result.update(density=args.density, gamma=args.gamma, components=args.components)
     print(f"ARI (predicted vs measured communities): {result['ari_mean']:.3f} "
           f"(std {result['ari_std']:.3f}, sem {result['ari_sem']:.3f}, "
           f"{result['n_scans']} scans)")
     if args.output:
         save_json(result, args.output)
-        print(f"saved to: {args.output}")
+        print(f"saved to {args.output}")
 
 
 if __name__ == "__main__":

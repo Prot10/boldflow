@@ -1,34 +1,30 @@
 #!/usr/bin/env python
 """Subject pairing beyond population structure (Appendix D).
 
-For a held-out scan ``i`` the *matched* score compares the FC of the trajectory
-generated from EEG ``i`` with the measured FC of scan ``i``. The *wrong-subject*
-score compares the same generated FC with the measured FC of every scan of a
-different held-out subject in the same fold, and averages. All scans of a fold
-share one checkpoint, so this is the FC-level equivalent of feeding the model
-another subject's EEG.
+For a held-out target scan ``i`` the *matched* score compares the FC of the
+trajectory generated from the EEG of scan ``i`` with the measured FC of scan
+``i``. The *wrong-subject* score compares the measured FC of scan ``i`` with
+the FC of the trajectory generated from the EEG of every scan of a different
+held-out subject in the same fold (same checkpoint), and averages.
 
 Both scores are reported on raw FC and on *population-residual* FC: Fisher-z
-FC minus the fold's training-population template. The cached trajectories only
-cover held-out scans, so the template of fold ``k`` is the Fisher-z mean of the
-measured FC of all cached scans whose subject is not held out in fold ``k``
-(i.e. the held-out scans of the other folds; this needs caches for every fold
-and includes the fold's validation subjects, which are not test subjects).
+FC minus the fold's population template. The template of fold ``k`` is the
+Fisher-z mean of the measured FC of the cached scans of all subjects not held
+out in fold ``k``; it requires the caches of every fold.
 
 FC is computed within scan on the cortical component mask. Scores are computed
 per sampled trajectory and averaged over the first ``--n-trajectories``
-trajectories (trajectories themselves are never averaged). Subjects are the
-bootstrap unit.
+trajectories. Subjects are the bootstrap unit.
 
 Examples
 --------
     python scripts/analysis/subject_pairing.py \\
-        --trajectory-dir outputs/trajectories \\
+        --trajectories outputs/trajectories \\
         --output outputs/analysis/subject_pairing.json
 
-    # interaction with a generator trained on constant (zero) EEG
+    # interaction with the generator retrained on constant (zero) EEG
     python scripts/analysis/subject_pairing.py \\
-        --trajectory-dir outputs/trajectories \\
+        --trajectories outputs/trajectories \\
         --constant-input-dir outputs/trajectories_constant_input \\
         --output outputs/analysis/subject_pairing.json
 """
@@ -57,27 +53,33 @@ def pairing_scores(
     templates: Optional[Dict[int, np.ndarray]] = None,
     n_trajectories: int = 1,
 ) -> List[Dict[str, Any]]:
-    """Scan-level matched / wrong-subject FC similarity, raw and residual."""
+    """Scan-level matched / wrong-subject FC similarity, raw and residual.
+
+    Each row belongs to a target scan: its measured FC is compared with the FC
+    generated from its own EEG (matched) and from the EEG of the other
+    subjects' scans in the same fold (wrong subject).
+    """
     templates = population_templates(items) if templates is None else templates
     comps = fc_components(items[0].target.shape[1])
     rows = []
     for fold in sorted({it.fold for it in items}):
         scans = [it for it in items if it.fold == fold]
         template = templates[fold]
-        targets = [fc_matrix(it.target, comps) for it in scans]
-        for i, item in enumerate(scans):
-            preds = [fc_matrix(traj, comps) for traj in item.samples[:n_trajectories]]
-            row = {"scan": item.scan, "subject": item.subject, "fold": fold}
-            for prefix, transform in (("", lambda fc: fc),
-                                      ("residual_", lambda fc: fisher_z(fc) - template)):
-                sim = [nanmean([fc_similarity(transform(p), transform(t)) for p in preds])
-                       for t in targets]
+        fold_rows = [{"scan": it.scan, "subject": it.subject, "fold": fold} for it in scans]
+        for prefix, transform in (("", lambda fc: fc),
+                                  ("residual_", lambda fc: fisher_z(fc) - template)):
+            targets = [transform(fc_matrix(it.target, comps)) for it in scans]
+            generated = [[transform(fc_matrix(traj, comps))
+                          for traj in it.samples[:n_trajectories]] for it in scans]
+            for i, (item, row) in enumerate(zip(scans, fold_rows)):
+                # sim[j]: FC generated from scan j against the measured FC of scan i
+                sim = [nanmean([fc_similarity(g, targets[i]) for g in gen]) for gen in generated]
                 wrong = nanmean([s for s, other in zip(sim, scans)
                                  if other.subject != item.subject])
                 row[prefix + "matched"] = sim[i]
                 row[prefix + "wrong_subject"] = wrong
                 row[prefix + "matched_minus_wrong"] = sim[i] - wrong
-            rows.append(row)
+        rows.extend(fold_rows)
     return rows
 
 
@@ -105,7 +107,7 @@ def interaction(
     n_boot: int = 10000,
     seed: int = 0,
 ) -> Dict[str, Any]:
-    """Paired model-minus-constant-input difference of each scan-level score."""
+    """Paired model-minus-constant-input difference of the matched-minus-wrong scores."""
     constant = {r["scan"]: r for r in constant_rows}
     if set(constant) != {r["scan"] for r in model_rows}:
         raise ValueError("model and constant-input caches do not cover the same scans")
@@ -113,14 +115,13 @@ def interaction(
     return {
         f: subject_bootstrap([r[f] - constant[r["scan"]][f] for r in model_rows],
                              subjects, n_boot=n_boot, seed=seed)
-        for f in ("matched_minus_wrong", "residual_matched_minus_wrong",
-                  "matched", "residual_matched")
+        for f in ("matched_minus_wrong", "residual_matched_minus_wrong")
     }
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--trajectory-dir", type=str, nargs="+", required=True,
+    p.add_argument("--trajectories", type=str, nargs="+", required=True,
                    help="Cached trajectories of the model (all folds).")
     p.add_argument("--constant-input-dir", type=str, nargs="+", default=None,
                    help="Cached trajectories of the constant-input generator.")
@@ -128,7 +129,7 @@ def parse_args() -> argparse.Namespace:
                    help="Sampled trajectories whose scores are averaged per scan.")
     p.add_argument("--n-boot", type=int, default=10000)
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--output", type=str, required=True)
+    p.add_argument("--output", type=str, default=None, help="JSON output path.")
     return p.parse_args()
 
 
@@ -141,7 +142,7 @@ def _print(label: str, stats: Dict[str, Any], fields: Sequence[str]) -> None:
 
 def main() -> None:
     args = parse_args()
-    items = load_scans(args.trajectory_dir)
+    items = load_scans(args.trajectories)
     templates = population_templates(items)
     rows = pairing_scores(items, templates, args.n_trajectories)
     result: Dict[str, Any] = {
@@ -166,8 +167,9 @@ def main() -> None:
         _print("Model minus constant-input generator", result["model_minus_constant_input"],
                list(result["model_minus_constant_input"]))
 
-    save_json(result, args.output)
-    print(f"Saved {args.output}")
+    if args.output:
+        save_json(result, args.output)
+        print(f"saved to {args.output}")
 
 
 if __name__ == "__main__":

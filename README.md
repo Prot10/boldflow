@@ -43,7 +43,7 @@ Total: ~96.4 M parameters at the default embed_dim=512, n_out_timesteps=4.
 
 **Sequence-to-sequence output.** Each EEG window predicts the block of
 `n_out_timesteps` consecutive DiFuMo volumes ending at the anchor TR (the
-paper headline uses `T_out = 4`), so the flow dimension is
+main comparison uses `T_out = 4`), so the flow dimension is
 `D = n_rois * n_out_timesteps = 256`. Because neighbouring windows overlap,
 each TR is covered by up to `T_out` blocks; evaluation overlap-averages
 those estimates into the final per-TR trajectory. Set `n_out_timesteps=1`
@@ -123,7 +123,7 @@ model = BoldFlow.from_pretrained("checkpoints/boldflow_neurobolt_fold1.pt", devi
 # Full 5-fold CV, NeuroBOLT row of Table 1
 python scripts/train.py --config configs/neurobolt.yaml
 
-# Single fold, 2 epochs (sanity check)
+# Single fold, 2 epochs (quick run)
 python scripts/train.py --config configs/neurobolt.yaml --folds 1 --epochs 2
 
 # Path overrides (no YAML edits)
@@ -207,12 +207,12 @@ boldflow/
     splits.py                  subject-level K-fold CV
     difumo.py                  DiFuMo labels, non-neural and cortical-network masks
     metrics.py                 MSE, T.Corr, FC Corr (masked, per scan)
-    schedulers.py              cosine warmup + layer-wise LR decay
+    schedulers.py              cosine schedule with linear warmup, parameter groups
     training.py                per-fold loop + K-fold runner + evaluate
     analysis.py                trajectory sampling/caching, FC and resampling helpers
     uncertainty.py             native ensemble, scalar recalibration, calibration error
     utils.py                   logging, seeding, IO, env-var path resolution
-  configs/                     headline configs, controls and ablations
+  configs/                     main-comparison configs, controls and ablations
   scripts/
     train.py                   K-fold (and multi-seed) training entry point
     evaluate.py                evaluate a checkpoint on a fold's test split

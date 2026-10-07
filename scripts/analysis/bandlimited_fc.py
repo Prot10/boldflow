@@ -7,22 +7,23 @@ the generated series are not. This script applies the same filter family
 recomputes FC Corr against the measured FC on the cortical component mask for
 two readouts:
 
-* single draw   - FC Corr of each sampled trajectory, averaged over draws;
+* single draw   - FC Corr of each sampled trajectory (one draw per anchor),
+  averaged over trajectories;
 * ensemble mean - FC Corr of the pointwise mean of the trajectories.
 
 It reports the filtered-minus-unfiltered change per readout (scan values
-averaged within subject, percentile bootstrap over subjects) and how much
-generated power the filter removes: the Welch power fraction above the cutoff
-and the realised drop in temporal variance.
+averaged within subject, percentile bootstrap over subjects) and the share of
+Welch power above the cutoff in the generated and in the measured series.
 ``--bandpass LOW HIGH`` swaps the low-pass for a band-pass, which additionally
-removes slow content.
+removes slow content; it is applied to both series, generated and measured.
 
 Examples
 --------
-    python scripts/analysis/bandlimited_fc.py outputs/trajectories \\
+    python scripts/analysis/bandlimited_fc.py --trajectories outputs/trajectories \\
         --output outputs/analysis/bandlimited_fc.json
 
-    python scripts/analysis/bandlimited_fc.py outputs/trajectories --bandpass 0.01 0.15
+    python scripts/analysis/bandlimited_fc.py --trajectories outputs/trajectories \\
+        --bandpass 0.01 0.15
 """
 from __future__ import annotations
 
@@ -75,22 +76,28 @@ def _single_draw_fc(samples: np.ndarray, fc_target: np.ndarray, comps: np.ndarra
 def scan_filtering_control(scan: ScanTrajectories, *, high: float = CUTOFF_HZ,
                            low: Optional[float] = None,
                            n_draws: Optional[int] = None) -> Dict[str, float]:
-    """FC Corr of one scan before/after filtering, for both readouts."""
+    """FC Corr of one scan before/after filtering, for both readouts.
+
+    The low-pass is applied to the generated series only (the measured series
+    already has this band limit); the band-pass is applied to both series.
+    """
     samples = np.asarray(scan.samples[:n_draws], dtype=np.float64)
     target = np.asarray(scan.target, dtype=np.float64)
     comps = fc_components(target.shape[1])
     filtered = zero_phase_filter(samples, scan.tr, high=high, low=low)
     fc_target = fc_matrix(target, comps)
+    fc_target_filtered = fc_target if low is None else fc_matrix(
+        zero_phase_filter(target, scan.tr, high=high, low=low), comps)
 
     row: Dict[str, float] = {}
-    for name, gen in (("raw", samples), ("filtered", filtered)):
-        row[f"single_draw_{name}"] = _single_draw_fc(gen, fc_target, comps)
-        row[f"ensemble_mean_{name}"] = fc_similarity(fc_matrix(gen.mean(axis=0), comps), fc_target)
+    for name, gen, fc_ref in (("raw", samples, fc_target),
+                              ("filtered", filtered, fc_target_filtered)):
+        row[f"single_draw_{name}"] = _single_draw_fc(gen, fc_ref, comps)
+        row[f"ensemble_mean_{name}"] = fc_similarity(fc_matrix(gen.mean(axis=0), comps), fc_ref)
     for readout in READOUTS:
         row[f"{readout}_delta"] = row[f"{readout}_filtered"] - row[f"{readout}_raw"]
     row["power_above_cutoff"] = power_fraction_above(samples, scan.tr, high)
     row["power_above_cutoff_measured"] = power_fraction_above(target, scan.tr, high)
-    row["variance_removed"] = float(1.0 - filtered.var(axis=1).sum() / samples.var(axis=1).sum())
     return row
 
 
@@ -111,11 +118,12 @@ def filtering_control(scans: Sequence[ScanTrajectories], *, high: float = CUTOFF
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("cache_dirs", nargs="+",
+    p.add_argument("--trajectories", type=str, nargs="+", required=True,
                    help="Directories written by sample_trajectories.py.")
     p.add_argument("--cutoff", type=float, default=CUTOFF_HZ, help="Low-pass cutoff in Hz.")
     p.add_argument("--bandpass", type=float, nargs=2, metavar=("LOW", "HIGH"), default=None,
-                   help="Use a band-pass between LOW and HIGH Hz instead.")
+                   help="Use a band-pass between LOW and HIGH Hz instead "
+                        "(applied to generated and measured series).")
     p.add_argument("--n-samples", type=int, default=None,
                    help="Use only the first M cached trajectories per scan.")
     p.add_argument("--n-boot", type=int, default=10000)
@@ -132,7 +140,7 @@ def _cell(s: Dict[str, float], signed: bool = False) -> str:
 def main() -> None:
     args = parse_args()
     low, high = args.bandpass if args.bandpass else (None, args.cutoff)
-    result = filtering_control(load_scans(args.cache_dirs), high=high, low=low,
+    result = filtering_control(load_scans(args.trajectories), high=high, low=low,
                                n_draws=args.n_samples, n_boot=args.n_boot, seed=args.seed)
     s = result["summary"]
     band = f"low-pass {high} Hz" if low is None else f"band-pass {low}-{high} Hz"
@@ -142,12 +150,11 @@ def main() -> None:
     for r in READOUTS:
         print(f"{r:<16}{s[r + '_raw']['mean']:>12.3f}{s[r + '_filtered']['mean']:>12.3f}"
               f"{_cell(s[r + '_delta'], True):>34}")
-    print(f"generated power above {high} Hz: {100 * s['power_above_cutoff']['mean']:.1f}% "
-          f"(measured {100 * s['power_above_cutoff_measured']['mean']:.1f}%); "
-          f"generated variance removed by the filter: {100 * s['variance_removed']['mean']:.1f}%")
+    print(f"power above {high} Hz: generated {100 * s['power_above_cutoff']['mean']:.1f}%, "
+          f"measured {100 * s['power_above_cutoff_measured']['mean']:.1f}%")
     if args.output:
         save_json(result, args.output)
-        print(f"saved {args.output}")
+        print(f"saved to {args.output}")
 
 
 if __name__ == "__main__":

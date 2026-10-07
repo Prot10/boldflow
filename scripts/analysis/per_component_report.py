@@ -3,9 +3,9 @@
 
 For every DiFuMo-64 component the script computes the temporal correlation
 (Pearson r between predicted and measured time courses within a held-out
-scan, averaged over the scans of a fold and then over folds). With a second
-cache (``--compare-dir``, e.g. a baseline's predictions stored in the same
-format) it also reports the difference ``delta = model - comparison`` and
+scan, averaged over the scans of a fold and then over folds), using one
+sampled trajectory per scan. With a second cache (``--compare-dir``) it also
+reports the difference ``delta = model - comparison`` and
 the number of components with ``delta > 0`` among the cortical and the
 deep-gray/cerebellar components (Thalamus, Putamen, Caudate, Cerebellum
 Crus II, Cerebellum I-V); non-neural components are listed but not counted.
@@ -14,7 +14,10 @@ It also reports the lag-1 autocorrelation of the measured BOLD (averaged over
 a subject's scans, then over subjects) for the thalamus against the mean of
 the cortical components.
 
-Reads the caches written by ``sample_trajectories.py``.
+Reads the caches written by ``sample_trajectories.py``. The comparison cache
+is not produced by this repository: store the comparison model's predictions
+for the same held-out scans in the same npz format (``samples`` of shape
+``(1, L, R)``, ``target``, ``scan``, ``subject``, ``fold``, ``tr``).
 
 Examples
 --------
@@ -58,12 +61,12 @@ def columnwise_pearson(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return np.where(den > 0, (a * b).sum(axis=0) / np.where(den > 0, den, 1.0), np.nan)
 
 
-def component_tcorr(items: Sequence[ScanTrajectories], n_average: int = 1) -> np.ndarray:
+def component_tcorr(items: Sequence[ScanTrajectories]) -> np.ndarray:
     """Per-component T.Corr: mean over scans within fold, then mean over folds."""
     by_fold: Dict[int, List[np.ndarray]] = {}
     for item in items:
         by_fold.setdefault(item.fold, []).append(
-            columnwise_pearson(item.ensemble_mean(n_average), item.target))
+            columnwise_pearson(item.samples[0], item.target))
     return np.mean([np.nanmean(scans, axis=0) for scans in by_fold.values()], axis=0)
 
 
@@ -90,14 +93,13 @@ def win_counts(delta: np.ndarray, groups: Sequence[str]) -> Dict[str, Dict[str, 
 
 def summarize(items: Sequence[ScanTrajectories],
               compare: Optional[Sequence[ScanTrajectories]] = None, *,
-              n_average: int = 1, compare_n_average: int = 1,
               labels: Sequence[str] = DIFUMO_64_LABELS) -> Dict[str, Any]:
     n_rois = items[0].target.shape[1]
     if n_rois != len(labels):
         raise ValueError(f"cache has {n_rois} components but {len(labels)} labels were given")
     groups = np.asarray(component_groups(labels))
-    tcorr, lag1 = component_tcorr(items, n_average), measured_lag1(items)
-    other = component_tcorr(compare, compare_n_average) if compare is not None else None
+    tcorr, lag1 = component_tcorr(items), measured_lag1(items)
+    other = component_tcorr(compare) if compare is not None else None
 
     rows = []
     for i, label in enumerate(labels):
@@ -123,10 +125,6 @@ def parse_args() -> argparse.Namespace:
                    help="Cache directories of the model (sample_trajectories.py).")
     p.add_argument("--compare-dir", type=str, nargs="+", default=None,
                    help="Cache directories of a second model to compare against.")
-    p.add_argument("--n-average", type=int, default=1,
-                   help="Sampled trajectories averaged per scan (1 = one sample).")
-    p.add_argument("--compare-n-average", type=int, default=1,
-                   help="Same, for the comparison cache.")
     p.add_argument("--output", type=str, default=None, help="JSON output path.")
     return p.parse_args()
 
@@ -135,8 +133,7 @@ def main() -> None:
     args = parse_args()
     items = load_scans(args.trajectories)
     compare = load_scans(args.compare_dir) if args.compare_dir else None
-    result = summarize(items, compare, n_average=args.n_average,
-                       compare_n_average=args.compare_n_average)
+    result = summarize(items, compare)
 
     for row in sorted(result["components"], key=lambda r: -r["tcorr"]):
         line = f"{row['component'][:48]:48s} {row['group']:21s} {row['tcorr']:6.3f}"
@@ -151,7 +148,7 @@ def main() -> None:
           f"vs cortical mean {lag1['cortical_mean']:.3f}")
     if args.output:
         save_json(result, args.output)
-        print(f"saved to: {args.output}")
+        print(f"saved to {args.output}")
 
 
 if __name__ == "__main__":

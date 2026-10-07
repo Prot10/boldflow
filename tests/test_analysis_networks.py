@@ -120,7 +120,7 @@ def test_edge_recovery_and_network_similarity(tmp_path):
     items = [_item(f"sub0{i}-scan01", f"sub0{i}", series, series[None]) for i in range(2)]
     result = er.summarize(items, k=18, labels=labels)
     assert result["edge_recovery"]["recovered"] == 18
-    assert result["group_fc_similarity"] == pytest.approx(1.0)
+    assert "group_fc_similarity" not in result
     assert "network_similarity" not in er.summarize(items, k=18)
 
     csv = tmp_path / "labels.csv"

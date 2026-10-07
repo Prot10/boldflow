@@ -18,9 +18,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import torch
 
-from boldflow.analysis import model_kwargs, scan_load_kwargs
+from boldflow.analysis import scan_load_kwargs
 from boldflow.data import create_cv_dataloaders
-from boldflow.model import BoldFlow
+from boldflow.model import load_model
 from boldflow.splits import SubjectLevelCVSplitter
 from boldflow.training import evaluate
 from boldflow.utils import (ENV_DATA_ROOT, autodetect_device,
@@ -76,9 +76,9 @@ def main() -> None:
         **scan_load_kwargs(cfg),
     )
 
-    model = BoldFlow.from_pretrained(args.checkpoint, device=device, **model_kwargs(cfg))
+    model = load_model(cfg, args.checkpoint, device)
 
-    # Headline protocol: one sampled trajectory per scan (overlap-averaged for
+    # Main-comparison protocol: one sampled trajectory per scan (overlap-averaged for
     # seq2seq), FC Corr within scan on the cortical component mask.
     out = evaluate(model, test_loader, device,
                    scan_sizes=meta.get("test_scan_sizes"), aggregate=True,

@@ -41,7 +41,7 @@ def tiny_seq2seq_model() -> BoldFlow:
 
 
 def test_full_size_instantiation():
-    """The headline configuration should instantiate within reasonable budget."""
+    """The main-comparison configuration should instantiate within reasonable budget."""
     model = BoldFlow()
     n_params = model.num_parameters()
     assert n_params > 80_000_000, f"too few params: {n_params}"
@@ -130,17 +130,11 @@ def test_overlap_average_recovers_trajectory():
     traj = np.random.RandomState(0).randn(n_tr, r).astype(np.float32)
     n_win = n_tr - t_out + 1
     blocks = np.stack([traj[i:i + t_out] for i in range(n_win)])  # (n_win, T, R)
-    # Default: every TR, averaged over the K_t <= T_out blocks covering it.
+    # Every TR, averaged over the K_t <= T_out blocks covering it.
     agg_p, agg_t = _overlap_average(blocks, blocks, t_out)
     assert agg_p.shape == traj.shape
     assert np.allclose(agg_p, traj, atol=1e-5)
     assert np.allclose(agg_t, traj, atol=1e-5)
-
-    agg_p, agg_t = _overlap_average(blocks, blocks, t_out, interior_only=True)
-    interior = traj[t_out - 1:n_win]          # TRs covered by all T_out windows
-    assert agg_p.shape == interior.shape
-    assert np.allclose(agg_p, interior, atol=1e-5)
-    assert np.allclose(agg_t, interior, atol=1e-5)
 
 
 def test_inference_readouts(tiny_model):
@@ -154,7 +148,7 @@ def test_inference_readouts(tiny_model):
     assert torch.allclose(c, d)
 
 
-def test_evaluate_headline_protocol(tiny_seq2seq_model):
+def test_evaluate_scan_level_protocol(tiny_seq2seq_model):
     """Aggregated evaluation returns one all-TR trajectory per scan."""
     from torch.utils.data import DataLoader, TensorDataset
 
@@ -180,13 +174,56 @@ def test_sample_ensemble_has_variance(tiny_model):
     assert samples.std(dim=0).mean() > 0
 
 
-def test_prior_sigma_stats_returns_floats(tiny_model):
-    eeg = torch.randn(1, 26, 1600).clamp(-15, 15)
-    stats = tiny_model.prior_sigma_stats(eeg)
-    for k in ("mean", "min", "max"):
-        assert k in stats
-        assert isinstance(stats[k], float)
-        assert stats[k] >= tiny_model.distributional_prior_head.sigma_floor - 1e-6
+def test_load_model_selects_the_variant_and_loads_strictly(tmp_path):
+    """load_model builds the class named by the config and rejects a mismatched checkpoint."""
+    from boldflow.ablations import BoldFlowPointPrior
+    from boldflow.model import load_model
+
+    base = dict(n_channels=26, input_length=1600, n_rois=8, embed_dim=64,
+                velocity_layers=2, n_inference_steps=4)
+    full_cfg = {"model": dict(base, n_out_timesteps=1), "data": {}}
+    point_cfg = {"model": dict(base, n_out_timesteps=1, variant="point_prior"), "data": {}}
+
+    torch.manual_seed(0)
+    full = BoldFlow(**base, n_out_timesteps=1)
+    point = BoldFlowPointPrior(**base)
+    full_path, point_path = tmp_path / "full.pt", tmp_path / "point.pt"
+    torch.save({"model_state_dict": full.state_dict()}, full_path)
+    torch.save({"model_state_dict": point.state_dict()}, point_path)
+
+    loaded = load_model(full_cfg, full_path)
+    assert isinstance(loaded, BoldFlow) and not loaded.training
+    assert all(torch.equal(v, full.state_dict()[k]) for k, v in loaded.state_dict().items())
+    loaded = load_model(point_cfg, point_path)
+    assert isinstance(loaded, BoldFlowPointPrior) and not loaded.training
+    assert all(torch.equal(v, point.state_dict()[k]) for k, v in loaded.state_dict().items())
+
+    with pytest.raises(RuntimeError):
+        load_model(full_cfg, point_path)
+    with pytest.raises(RuntimeError):
+        load_model(point_cfg, full_path)
+    with pytest.raises(RuntimeError):
+        BoldFlow.from_pretrained(point_path, **base, n_out_timesteps=1)
+
+
+def test_warmup_starts_at_the_first_optimizer_step():
+    """The scheduler sets the warmup rate at construction and reaches min_lr at the end."""
+    from boldflow.schedulers import CosineAnnealingWarmup, get_param_groups
+
+    model = torch.nn.Sequential(torch.nn.Linear(2, 2), torch.nn.LayerNorm(2))
+    groups = get_param_groups(model, 1e-4, 0.01)
+    assert [g["weight_decay"] for g in groups] == [0.01, 0.0]
+    assert sum(len(g["params"]) for g in groups) == 4
+    optimizer = torch.optim.AdamW(groups)
+    scheduler = CosineAnnealingWarmup(optimizer, total_steps=10, warmup_steps=4)
+    rates = []
+    for _ in range(10):
+        rates.append(optimizer.param_groups[0]["lr"])
+        optimizer.step()
+        scheduler.step()
+    assert rates[:4] == pytest.approx([0.25e-4, 0.5e-4, 0.75e-4, 1e-4])
+    assert rates[-1] == pytest.approx(1e-6)
+    assert all(a >= b for a, b in zip(rates[3:], rates[4:]))
 
 
 def test_sleep_montage_30_channels():
